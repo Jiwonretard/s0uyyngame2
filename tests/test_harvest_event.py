@@ -3,6 +3,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
@@ -60,6 +61,10 @@ class HarvestEventTests(unittest.TestCase):
             all(frame.get_flags() & pygame.SRCALPHA for frames in self.app.player_frames.values()
                 for frame in frames)
         )
+
+    def test_world_draw_does_not_resize_transparent_surfaces(self):
+        with patch("pygame.transform.scale", side_effect=AssertionError("unexpected resize")):
+            self.app.draw()
 
 
 if __name__ == "__main__":

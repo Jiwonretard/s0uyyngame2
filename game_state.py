@@ -16,6 +16,9 @@ from typing import Callable
 SAVE_VERSION = 1
 STARTING_PLOTS = 4
 MAX_PLOTS = 12
+LAND_BASE_COST = 10_000
+LAND_COST_STEP = 2_500
+CUSTOMER_QUEUE_SIZE = 6
 GROW_SECONDS = 24.0
 REGROW_SECONDS = 17.0
 HARVEST_YIELD = 4
@@ -77,6 +80,7 @@ class GameState:
     active_plots: int = STARTING_PLOTS
     plots: list[Plot] = field(default_factory=lambda: [Plot() for _ in range(MAX_PLOTS)])
     smoothies_sold: int = 0
+    customers_waiting: int = CUSTOMER_QUEUE_SIZE
     berries_sold: int = 0
     berries_harvested: int = 0
     land_purchased: int = 0
@@ -95,7 +99,7 @@ class GameState:
 
     @property
     def land_cost(self) -> int:
-        return 45 + (self.active_plots - STARTING_PLOTS) * 25
+        return LAND_BASE_COST + (self.active_plots - STARTING_PLOTS) * LAND_COST_STEP
 
     def inventory(self, key: str) -> int:
         return int(getattr(self, key))
@@ -185,21 +189,24 @@ class GameState:
     def sell_smoothie(self) -> tuple[bool, str]:
         if self.smoothies < 1:
             return False, "판매할 스무디가 없어요. 먼저 만들어 주세요."
+        if self.customers_waiting < 1:
+            return False, "지금은 기다리는 손님이 없어요. 새 손님을 잠시 기다려 주세요."
         self.smoothies -= 1
+        self.customers_waiting -= 1
         self.money += SMOOTHIE_PRICE
         self.smoothies_sold += 1
-        return True, f"스무디 1잔 판매! {SMOOTHIE_PRICE}코인을 벌었어요."
+        return True, f"손님에게 스무디 1잔 판매! {SMOOTHIE_PRICE}코인을 벌었어요."
 
     def buy_land(self) -> tuple[bool, str]:
         if self.active_plots >= MAX_PLOTS:
             return False, "농장을 최대로 넓혔어요!"
         cost = self.land_cost
         if self.money < cost:
-            return False, f"땅을 사려면 {cost}코인이 필요해요."
+            return False, f"텃밭을 사려면 {cost:,}코인이 필요해요."
         self.money -= cost
         self.active_plots += 1
         self.land_purchased += 1
-        return True, f"새 밭을 샀어요! 이제 밭이 {self.active_plots}칸이에요."
+        return True, f"새 텃밭을 샀어요! 이제 밭이 {self.active_plots}칸이에요."
 
     def to_dict(self) -> dict:
         data = asdict(self)
@@ -237,6 +244,9 @@ class GameState:
             allowed = {field_name for field_name in cls.__dataclass_fields__}
             state = cls(**{key: value for key, value in raw.items() if key in allowed})
             state.active_plots = max(STARTING_PLOTS, min(MAX_PLOTS, int(state.active_plots)))
+            state.customers_waiting = max(
+                0, min(CUSTOMER_QUEUE_SIZE, int(state.customers_waiting))
+            )
             state.plots = []
             for item in plot_data[:MAX_PLOTS]:
                 state.plots.append(

@@ -7,8 +7,10 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from game_state import (  # noqa: E402
+    CUSTOMER_QUEUE_SIZE,
     GROW_SECONDS,
     HARVEST_YIELD,
+    LAND_BASE_COST,
     RAW_BERRY_PRICE,
     REGROW_SECONDS,
     SMOOTHIE_PRICE,
@@ -49,6 +51,7 @@ class GameStateTests(unittest.TestCase):
         self.assertEqual(state.smoothies, 0)
         self.assertEqual(state.money, starting_money + SMOOTHIE_PRICE)
         self.assertEqual(state.smoothies_sold, 1)
+        self.assertEqual(state.customers_waiting, CUSTOMER_QUEUE_SIZE - 1)
 
     def test_raw_berry_sale_and_land_price_progression(self):
         state = GameState.new(now=100.0)
@@ -58,11 +61,24 @@ class GameStateTests(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(state.money, starting_money + RAW_BERRY_PRICE)
         first_cost = state.land_cost
+        self.assertEqual(first_cost, LAND_BASE_COST)
         state.money = first_cost
         ok, _ = state.buy_land()
         self.assertTrue(ok)
         self.assertEqual(state.money, 0)
         self.assertGreater(state.land_cost, first_cost)
+
+    def test_customers_leave_the_queue_one_at_a_time(self):
+        state = GameState.new(now=100.0)
+        state.smoothies = CUSTOMER_QUEUE_SIZE + 1
+        for expected_waiting in range(CUSTOMER_QUEUE_SIZE - 1, -1, -1):
+            ok, _ = state.sell_smoothie()
+            self.assertTrue(ok)
+            self.assertEqual(state.customers_waiting, expected_waiting)
+
+        ok, _ = state.sell_smoothie()
+        self.assertFalse(ok)
+        self.assertEqual(state.smoothies, 1)
 
     def test_save_and_load_round_trip(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -70,6 +86,7 @@ class GameStateTests(unittest.TestCase):
             state = GameState.new(now=100.0)
             state.money = 123
             state.blueberries = 9
+            state.customers_waiting = 2
             state.plant(1, now=100.0)
             state.save(path)
             loaded = GameState.load(path, now=101.0)
@@ -77,6 +94,7 @@ class GameStateTests(unittest.TestCase):
             self.assertEqual(loaded.blueberries, 9)
             self.assertTrue(loaded.plots[1].planted)
             self.assertEqual(loaded.plots[1].ready_at, 100.0 + GROW_SECONDS)
+            self.assertEqual(loaded.customers_waiting, 2)
 
     def test_corrupt_save_falls_back_to_new_game(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -16,6 +16,7 @@ import time
 import pygame
 
 from game_state import (
+    CUSTOMER_QUEUE_SIZE,
     GROW_SECONDS,
     HARVEST_YIELD,
     ITEM_COSTS,
@@ -31,8 +32,8 @@ SCREEN_W, SCREEN_H = 1280, 720
 WORLD_W, WORLD_H = 2200, 1500
 FPS = 60
 PLAYER_SPEED = 235.0
-PIXEL_DOWNSCALE = 2
 DAY_SECONDS = 480.0
+CUSTOMER_RETURN_SECONDS = 14.0
 BASE_DIR = Path(__file__).resolve().parent
 SAVE_PATH = BASE_DIR / "save_game.json"
 SALE_SOUND_PATH = BASE_DIR / "assets" / "smoothie_sale.wav"
@@ -68,6 +69,24 @@ CAFE = pygame.Rect(1540, 700, 440, 300)
 MARKET = pygame.Rect(1010, 990, 360, 190)
 SMOOTHIE_CART = pygame.Rect(1530, 1120, 430, 170)
 POND = pygame.Rect(1040, 245, 390, 270)
+
+CUSTOMER_QUEUE_POINTS = [
+    (1840, 1322),
+    (1905, 1338),
+    (1970, 1354),
+    (2035, 1370),
+    (2100, 1386),
+    (2165, 1402),
+]
+
+CUSTOMER_STYLES = [
+    ((244, 193, 152), (101, 58, 43), (211, 92, 93)),
+    ((222, 167, 121), (52, 42, 39), (72, 132, 178)),
+    ((246, 205, 170), (218, 159, 66), (86, 151, 91)),
+    ((196, 137, 102), (45, 35, 42), (180, 103, 174)),
+    ((235, 187, 146), (132, 73, 48), (224, 147, 61)),
+    ((213, 156, 119), (73, 53, 42), (88, 166, 158)),
+]
 
 PLOT_RECTS = [
     pygame.Rect(280 + col * 158, 405 + row * 158, 120, 94)
@@ -156,16 +175,25 @@ class ActionEffect:
         self.y -= 23 * dt
 
 
+@dataclass
+class DepartingCustomer:
+    x: float
+    y: float
+    style: int
+    life: float = 1.4
+
+    def update(self, dt: float) -> None:
+        self.life -= dt
+        self.x += 105 * dt
+        self.y -= 30 * dt
+
+
 class GameApp:
     def __init__(self) -> None:
         pygame.mixer.pre_init(44100, -16, 2, 512)
         pygame.init()
         pygame.display.set_caption("블루베리 밸리")
         self.screen = pygame.display.set_mode((SCREEN_W, SCREEN_H))
-        self.world_surface = pygame.Surface((SCREEN_W, SCREEN_H)).convert()
-        self.pixel_surface = pygame.Surface(
-            (SCREEN_W // PIXEL_DOWNSCALE, SCREEN_H // PIXEL_DOWNSCALE)
-        ).convert()
         self.clock = pygame.time.Clock()
         font_path = find_korean_font()
         self.fonts = {
@@ -196,6 +224,8 @@ class GameApp:
         self.audio_error = ""
         self.particles: list[Particle] = []
         self.action_effects: list[ActionEffect] = []
+        self.departing_customers: list[DepartingCustomer] = []
+        self.next_customer_at = time.time() + CUSTOMER_RETURN_SECONDS
         self.action_timer = 0.0
         self.impact_timer = 0.0
         self.shake_offset = pygame.Vector2()
@@ -382,6 +412,18 @@ class GameApp:
         for effect in self.action_effects:
             effect.update(dt)
         self.action_effects = [effect for effect in self.action_effects if effect.life > 0]
+        for customer in self.departing_customers:
+            customer.update(dt)
+        self.departing_customers = [
+            customer for customer in self.departing_customers if customer.life > 0
+        ]
+        now = time.time()
+        if self.state.customers_waiting < CUSTOMER_QUEUE_SIZE and now >= self.next_customer_at:
+            was_empty = self.state.customers_waiting == 0
+            self.state.customers_waiting += 1
+            self.next_customer_at = now + CUSTOMER_RETURN_SECONDS
+            if was_empty:
+                self.notify("새 손님이 스무디 판매대에 도착했어요!")
         self.action_timer = max(0.0, self.action_timer - dt)
         self.impact_timer = max(0.0, self.impact_timer - dt)
         if self.impact_timer > 0:
@@ -462,10 +504,12 @@ class GameApp:
             ("sell_raw", (MARKET.centerx, MARKET.bottom + 38), 88,
              f"블루베리 생과 1개 판매 (+{RAW_BERRY_PRICE}코인)"),
             ("sell_smoothie", (SMOOTHIE_CART.centerx, SMOOTHIE_CART.bottom + 38), 92,
-             f"스무디 1잔 손님에게 판매 (+{SMOOTHIE_PRICE}코인)"),
+             f"스무디 1잔 판매 (+{SMOOTHIE_PRICE}코인 · 대기 {self.state.customers_waiting}명)"
+             if self.state.customers_waiting
+             else "새 손님을 기다리는 중"),
             ("land", (980, 650), 86,
              "농장 최대 확장 완료" if self.state.active_plots >= MAX_PLOTS
-             else f"밭 1칸 확장하기 ({self.state.land_cost}코인)"),
+             else f"텃밭 1칸 구입하기 ({self.state.land_cost:,}코인)"),
         ]
         for kind, point, radius, prompt in fixed:
             gap = distance(position, point)
@@ -518,8 +562,14 @@ class GameApp:
             if ok:
                 self.spawn_particles(target["point"], GOLD, 10)
         elif kind == "sell_smoothie":
+            departing_style = self.state.smoothies_sold
             ok, message = self.state.sell_smoothie()
             if ok:
+                front_x, front_y = CUSTOMER_QUEUE_POINTS[0]
+                self.departing_customers.append(
+                    DepartingCustomer(front_x, front_y, departing_style)
+                )
+                self.next_customer_at = time.time() + CUSTOMER_RETURN_SECONDS
                 self.play_sale_sound()
                 self.spawn_particles(target["point"], GOLD, 20)
         elif kind == "land":
@@ -601,8 +651,8 @@ class GameApp:
 
     def draw_ground(self) -> None:
         self.screen.fill(GRASS)
-        # A 32 px ground grid is textured in small, hard-edged clusters. The
-        # whole world is later nearest-neighbour scaled for a coherent pixel look.
+        # A 32 px ground grid is textured in small, hard-edged clusters for a
+        # coherent pixel-art look without a transparency-breaking resize pass.
         tile = 32
         start_world_x = int(self.camera.x // tile) * tile
         start_world_y = int(self.camera.y // tile) * tile
@@ -744,6 +794,50 @@ class GameApp:
         for plank_y in (rect.y + 70, rect.y + 120):
             pygame.draw.line(self.screen, (161, 123, 178), (rect.x + 18, plank_y), (rect.right - 18, plank_y), 3)
 
+        queue_badge = pygame.Rect(rect.right - 145, rect.y + 57, 122, 31)
+        pygame.draw.rect(self.screen, WOOD_DARK, queue_badge.inflate(4, 4))
+        pygame.draw.rect(self.screen, CREAM, queue_badge)
+        self.text(
+            f"대기 {self.state.customers_waiting}명",
+            14,
+            BLUEBERRY_DARK,
+            queue_badge.centerx,
+            queue_badge.centery,
+            center=True,
+        )
+
+    def draw_customer(self, point: tuple[float, float], style: int,
+                      *, departing: bool = False) -> None:
+        x, y = self.world_to_screen(point)
+        if not (-60 < x < SCREEN_W + 60 and -110 < y < SCREEN_H + 60):
+            return
+        skin, hair, shirt = CUSTOMER_STYLES[style % len(CUSTOMER_STYLES)]
+        step = 4 if departing and int(time.time() * 10) % 2 else 0
+
+        pygame.draw.ellipse(self.screen, (55, 98, 47), (x - 22, y - 8, 44, 12))
+        pygame.draw.rect(self.screen, INK, (x - 14 + step, y - 20, 10, 20))
+        pygame.draw.rect(self.screen, INK, (x + 4 - step, y - 20, 10, 20))
+        pygame.draw.rect(self.screen, tuple(max(0, value - 40) for value in shirt),
+                         (x - 18, y - 51, 36, 34))
+        pygame.draw.rect(self.screen, shirt, (x - 15, y - 49, 30, 29))
+
+        if departing:
+            pygame.draw.rect(self.screen, skin, (x - 25, y - 59, 9, 27))
+            pygame.draw.rect(self.screen, skin, (x + 16, y - 68, 9, 32))
+            pygame.draw.rect(self.screen, skin, (x + 19, y - 76, 8, 10))
+        else:
+            pygame.draw.rect(self.screen, skin, (x - 23, y - 48, 8, 25))
+            pygame.draw.rect(self.screen, skin, (x + 15, y - 48, 8, 25))
+            pygame.draw.circle(self.screen, GOLD, (x - 19, y - 27), 5)
+            pygame.draw.circle(self.screen, CREAM, (x - 19, y - 27), 2)
+
+        pygame.draw.rect(self.screen, hair, (x - 19, y - 87, 38, 27))
+        pygame.draw.rect(self.screen, skin, (x - 16, y - 79, 32, 27))
+        pygame.draw.rect(self.screen, hair, (x - 19, y - 84, 9, 31))
+        pygame.draw.rect(self.screen, hair, (x - 10, y - 87, 30, 8))
+        pygame.draw.rect(self.screen, INK, (x - 11, y - 69, 5, 5))
+        pygame.draw.rect(self.screen, (190, 81, 88), (x - 6, y - 59, 8, 3))
+
     def draw_farm_fence(self) -> None:
         farm = self.rect_to_screen(pygame.Rect(225, 350, 720, 550))
         color = (177, 119, 63)
@@ -826,10 +920,14 @@ class GameApp:
         x, y = self.world_to_screen((980, 650))
         pygame.draw.rect(self.screen, WOOD_DARK, (x - 6, y - 5, 12, 58))
         pygame.draw.rect(self.screen, WOOD, (x - 3, y - 3, 6, 53))
-        sign = pygame.Rect(x - 74, y - 45, 148, 48)
+        sign = pygame.Rect(x - 94, y - 45, 188, 48)
         pygame.draw.rect(self.screen, WOOD_DARK, sign.inflate(8, 8))
         pygame.draw.rect(self.screen, (239, 199, 126), sign)
-        label = "최대 확장" if self.state.active_plots >= MAX_PLOTS else f"새 밭 {self.state.land_cost}"
+        label = (
+            "최대 확장"
+            if self.state.active_plots >= MAX_PLOTS
+            else f"새 텃밭 {self.state.land_cost:,}코인"
+        )
         self.text(label, 15, INK, sign.centerx, sign.centery, center=True)
 
     def draw_tree(self, point: tuple[int, int]) -> None:
@@ -975,12 +1073,32 @@ class GameApp:
         self.draw_house(CAFE, "블루베리 블렌더", (229, 205, 238), (112, 79, 157))
         self.draw_market()
         self.draw_smoothie_cart()
+        customers: list[tuple[tuple[float, float], int, bool]] = [
+            (point, self.state.smoothies_sold + index, False)
+            for index, point in enumerate(
+                CUSTOMER_QUEUE_POINTS[:self.state.customers_waiting]
+            )
+        ]
+        customers.extend(
+            ((customer.x, customer.y), customer.style, True)
+            for customer in self.departing_customers
+        )
         for tree in sorted((tree for tree in TREE_POSITIONS if tree[1] <= self.player.y), key=lambda item: item[1]):
             self.draw_tree(tree)
+        for point, style, departing in sorted(
+            (customer for customer in customers if customer[0][1] <= self.player.y),
+            key=lambda customer: customer[0][1],
+        ):
+            self.draw_customer(point, style, departing=departing)
         self.draw_particles()
         self.draw_character()
         for tree in sorted((tree for tree in TREE_POSITIONS if tree[1] > self.player.y), key=lambda item: item[1]):
             self.draw_tree(tree)
+        for point, style, departing in sorted(
+            (customer for customer in customers if customer[0][1] > self.player.y),
+            key=lambda customer: customer[0][1],
+        ):
+            self.draw_customer(point, style, departing=departing)
         self.draw_interaction_marker()
 
     def current_objective(self) -> str:
@@ -1155,12 +1273,10 @@ class GameApp:
         self.text("마을로 나가기", 20, WHITE, start.centerx, start.centery, center=True)
 
     def draw(self) -> None:
-        display = self.screen
-        self.screen = self.world_surface
+        # Drawing transparent text and sprites to an intermediate surface before
+        # resizing can turn their transparent pixels into solid rectangles on
+        # some macOS/SDL combinations. Draw directly to the display surface.
         self.draw_world()
-        self.screen = display
-        pygame.transform.scale(self.world_surface, self.pixel_surface.get_size(), self.pixel_surface)
-        pygame.transform.scale(self.pixel_surface, (SCREEN_W, SCREEN_H), self.screen)
         self.draw_lighting()
         self.draw_impact_flash()
         self.draw_action_effects()

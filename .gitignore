@@ -1,0 +1,6 @@
+__pycache__/
+.pytest_cache/
+*.pyc
+save_game.json
+save_game.json.tmp
+

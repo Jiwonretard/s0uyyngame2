@@ -9,11 +9,12 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 import json
 from pathlib import Path
+import random
 import time
 from typing import Callable
 
 
-SAVE_VERSION = 1
+SAVE_VERSION = 2
 STARTING_PLOTS = 4
 MAX_PLOTS = 12
 LAND_BASE_COST = 10_000
@@ -37,15 +38,65 @@ ITEM_LABELS = {
     "ice": "얼음",
 }
 
-SMOOTHIE_RECIPE = {
-    "blueberries": 3,
-    "honey": 1,
-    "milk": 1,
-    "ice": 1,
+RAW_BERRY_PRICE = 3
+# Kept as the familiar reference price for older code and save files. New
+# customer orders use CustomerOrder.price, which rises with every ingredient.
+SMOOTHIE_PRICE = 20
+SMOOTHIE_BASE_PRICE = 8
+ORDER_INGREDIENT_REWARDS = {
+    "blueberries": 2,
+    "honey": 4,
+    "milk": 5,
+    "ice": 2,
 }
 
-RAW_BERRY_PRICE = 3
-SMOOTHIE_PRICE = 20
+
+@dataclass(eq=True)
+class CustomerOrder:
+    """One customer's custom smoothie request."""
+
+    blueberries: int = 3
+    honey: int = 1
+    milk: int = 1
+    ice: int = 1
+
+    @classmethod
+    def random(cls, rng: random.Random | None = None) -> "CustomerOrder":
+        picker = rng if rng is not None else random
+        return cls(
+            blueberries=3,
+            honey=picker.randint(0, 2),
+            milk=picker.randint(1, 2),
+            ice=picker.randint(1, 3),
+        )
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "CustomerOrder":
+        return cls(
+            blueberries=3,
+            honey=max(0, min(2, int(data.get("honey", 1)))),
+            milk=max(1, min(2, int(data.get("milk", 1)))),
+            ice=max(1, min(3, int(data.get("ice", 1)))),
+        )
+
+    @property
+    def recipe(self) -> dict[str, int]:
+        return {
+            "blueberries": self.blueberries,
+            "honey": self.honey,
+            "milk": self.milk,
+            "ice": self.ice,
+        }
+
+    @property
+    def price(self) -> int:
+        return SMOOTHIE_BASE_PRICE + sum(
+            self.recipe[key] * reward
+            for key, reward in ORDER_INGREDIENT_REWARDS.items()
+        )
+
+    def short_text(self) -> str:
+        return f"블루베리 {self.blueberries} · 꿀 {self.honey} · 우유 {self.milk} · 얼음 {self.ice}"
 
 
 @dataclass
@@ -81,6 +132,8 @@ class GameState:
     plots: list[Plot] = field(default_factory=lambda: [Plot() for _ in range(MAX_PLOTS)])
     smoothies_sold: int = 0
     customers_waiting: int = CUSTOMER_QUEUE_SIZE
+    customer_orders: list[CustomerOrder] = field(default_factory=list)
+    prepared_order: CustomerOrder | None = None
     berries_sold: int = 0
     berries_harvested: int = 0
     land_purchased: int = 0
@@ -95,6 +148,9 @@ class GameState:
         current = time.time() if now is None else now
         state = cls(started_at=current)
         state.plots[0] = Plot(planted=True, ready_at=current, cycle_seconds=GROW_SECONDS)
+        state.customer_orders = [
+            CustomerOrder.random() for _ in range(CUSTOMER_QUEUE_SIZE)
+        ]
         return state
 
     @property
@@ -103,6 +159,32 @@ class GameState:
 
     def inventory(self, key: str) -> int:
         return int(getattr(self, key))
+
+    def _sync_customer_orders(self) -> None:
+        self.customers_waiting = max(
+            0, min(CUSTOMER_QUEUE_SIZE, int(self.customers_waiting))
+        )
+        self.customer_orders = self.customer_orders[:self.customers_waiting]
+        while len(self.customer_orders) < self.customers_waiting:
+            self.customer_orders.append(CustomerOrder.random())
+
+    @property
+    def current_order(self) -> CustomerOrder | None:
+        self._sync_customer_orders()
+        return self.customer_orders[0] if self.customer_orders else None
+
+    def add_customer(
+        self,
+        order: CustomerOrder | None = None,
+        *,
+        rng: random.Random | None = None,
+    ) -> bool:
+        self._sync_customer_orders()
+        if self.customers_waiting >= CUSTOMER_QUEUE_SIZE:
+            return False
+        self.customer_orders.append(order or CustomerOrder.random(rng))
+        self.customers_waiting += 1
+        return True
 
     def plant(self, plot_index: int, now: float | None = None) -> tuple[bool, str]:
         current = time.time() if now is None else now
@@ -169,6 +251,11 @@ class GameState:
         return True, f"블루베리 1개를 팔아 {RAW_BERRY_PRICE}코인을 벌었어요."
 
     def make_smoothie(self) -> tuple[bool, str]:
+        order = self.current_order
+        if order is None:
+            return False, "지금은 주문한 손님이 없어요. 새 손님을 잠시 기다려 주세요."
+        if self.smoothies >= 1:
+            return False, "이미 만든 주문 스무디가 있어요. 맨 앞 손님에게 먼저 판매해 주세요."
         missing: list[str] = []
         labels = {
             "blueberries": "블루베리",
@@ -176,26 +263,33 @@ class GameState:
             "milk": "우유",
             "ice": "얼음",
         }
-        for key, amount in SMOOTHIE_RECIPE.items():
+        for key, amount in order.recipe.items():
             if self.inventory(key) < amount:
                 missing.append(f"{labels[key]} {amount - self.inventory(key)}")
         if missing:
             return False, "재료가 부족해요: " + ", ".join(missing)
-        for key, amount in SMOOTHIE_RECIPE.items():
+        for key, amount in order.recipe.items():
             setattr(self, key, self.inventory(key) - amount)
         self.smoothies += 1
-        return True, "보랏빛 블루베리 스무디를 만들었어요!"
+        self.prepared_order = CustomerOrder(**order.recipe)
+        return True, f"주문대로 스무디 완성! 판매하면 {order.price}코인을 받아요."
 
     def sell_smoothie(self) -> tuple[bool, str]:
-        if self.smoothies < 1:
-            return False, "판매할 스무디가 없어요. 먼저 만들어 주세요."
-        if self.customers_waiting < 1:
+        order = self.current_order
+        if order is None:
             return False, "지금은 기다리는 손님이 없어요. 새 손님을 잠시 기다려 주세요."
+        if self.smoothies < 1:
+            return False, "판매할 주문 스무디가 없어요. 블렌더에서 먼저 만들어 주세요."
+        if self.prepared_order is not None and self.prepared_order != order:
+            return False, "이 스무디는 다른 주문이에요. 맨 앞 손님의 주문을 다시 확인해 주세요."
         self.smoothies -= 1
         self.customers_waiting -= 1
-        self.money += SMOOTHIE_PRICE
+        self.customer_orders.pop(0)
+        self.money += order.price
         self.smoothies_sold += 1
-        return True, f"손님에게 스무디 1잔 판매! {SMOOTHIE_PRICE}코인을 벌었어요."
+        if self.smoothies == 0:
+            self.prepared_order = None
+        return True, f"주문 스무디 판매 성공! 재료만큼 {order.price}코인을 벌었어요."
 
     def buy_land(self) -> tuple[bool, str]:
         if self.active_plots >= MAX_PLOTS:
@@ -237,9 +331,12 @@ class GameState:
             return cls.new(current)
         try:
             raw = json.loads(save_path.read_text(encoding="utf-8"))
-            if raw.get("save_version") != SAVE_VERSION:
+            save_version = int(raw.get("save_version", 1))
+            if save_version not in (1, SAVE_VERSION):
                 raise ValueError("지원하지 않는 저장 파일 버전입니다.")
             plot_data = raw.pop("plots")
+            order_data = raw.pop("customer_orders", [])
+            prepared_order_data = raw.pop("prepared_order", None)
             raw.pop("save_version", None)
             allowed = {field_name for field_name in cls.__dataclass_fields__}
             state = cls(**{key: value for key, value in raw.items() if key in allowed})
@@ -247,6 +344,18 @@ class GameState:
             state.customers_waiting = max(
                 0, min(CUSTOMER_QUEUE_SIZE, int(state.customers_waiting))
             )
+            state.customer_orders = [
+                CustomerOrder.from_dict(item)
+                for item in order_data[:state.customers_waiting]
+                if isinstance(item, dict)
+            ]
+            if isinstance(prepared_order_data, dict):
+                state.prepared_order = CustomerOrder.from_dict(prepared_order_data)
+            else:
+                # Version 1 smoothies were generic. Preserve them as legacy
+                # stock that can be served without discarding player progress.
+                state.prepared_order = None
+            state._sync_customer_orders()
             state.plots = []
             for item in plot_data[:MAX_PLOTS]:
                 state.plots.append(

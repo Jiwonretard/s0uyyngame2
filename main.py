@@ -17,13 +17,13 @@ import pygame
 
 from game_state import (
     CUSTOMER_QUEUE_SIZE,
+    CustomerOrder,
     GROW_SECONDS,
     HARVEST_YIELD,
     ITEM_COSTS,
     MAX_PLOTS,
     RAW_BERRY_PRICE,
     REGROW_SECONDS,
-    SMOOTHIE_PRICE,
     GameState,
 )
 
@@ -436,7 +436,7 @@ class GameApp:
         now = time.time()
         if self.state.customers_waiting < CUSTOMER_QUEUE_SIZE and now >= self.next_customer_at:
             was_empty = self.state.customers_waiting == 0
-            self.state.customers_waiting += 1
+            self.state.add_customer()
             self.next_customer_at = now + CUSTOMER_RETURN_SECONDS
             if was_empty:
                 self.notify("새 손님이 스무디 판매대에 도착했어요!")
@@ -541,16 +541,25 @@ class GameApp:
                 candidates.append((gap, {"kind": "plot", "index": index, "prompt": prompt,
                                          "point": rect.center}))
 
+        order = self.state.current_order
+        craft_prompt = (
+            f"주문 스무디 만들기 · {order.short_text()}"
+            if order is not None
+            else "새 주문을 기다리는 중"
+        )
+        sell_prompt = (
+            f"주문 스무디 판매 (+{order.price}코인 · 대기 {self.state.customers_waiting}명)"
+            if order is not None
+            else "새 손님을 기다리는 중"
+        )
         fixed = [
             ("save", (HOUSE.centerx, HOUSE.bottom + 37), 82, "집 앞에서 농장 저장하기"),
             ("shop", (SHOP.centerx, SHOP.bottom + 42), 90, "재료 상점 들어가기"),
-            ("craft", (CAFE.centerx, CAFE.bottom + 42), 90, "블렌더로 스무디 1잔 만들기"),
+            ("craft", (CAFE.centerx, CAFE.bottom + 42), 90, craft_prompt),
             ("sell_raw", (MARKET.centerx, MARKET.bottom + 38), 88,
              f"블루베리 생과 1개 판매 (+{RAW_BERRY_PRICE}코인)"),
             ("sell_smoothie", (SMOOTHIE_CART.centerx, SMOOTHIE_CART.bottom + 38), 92,
-             f"스무디 1잔 판매 (+{SMOOTHIE_PRICE}코인 · 대기 {self.state.customers_waiting}명)"
-             if self.state.customers_waiting
-             else "새 손님을 기다리는 중"),
+             sell_prompt),
             ("land", (980, 650), 86,
              "농장 최대 확장 완료" if self.state.active_plots >= MAX_PLOTS
              else f"텃밭 1칸 구입하기 ({self.state.land_cost:,}코인)"),
@@ -857,8 +866,15 @@ class GameApp:
             center=True,
         )
 
-    def draw_customer(self, point: tuple[float, float], style: int,
-                      *, departing: bool = False) -> None:
+    def draw_customer(
+        self,
+        point: tuple[float, float],
+        style: int,
+        *,
+        departing: bool = False,
+        order: CustomerOrder | None = None,
+        front: bool = False,
+    ) -> None:
         x, y = self.world_to_screen(point)
         if not (-60 < x < SCREEN_W + 60 and -110 < y < SCREEN_H + 60):
             return
@@ -888,6 +904,34 @@ class GameApp:
         pygame.draw.rect(self.screen, hair, (x - 10, y - 87, 30, 8))
         pygame.draw.rect(self.screen, INK, (x - 11, y - 69, 5, 5))
         pygame.draw.rect(self.screen, (190, 81, 88), (x - 6, y - 59, 8, 3))
+
+        if front and order is not None and not departing:
+            bubble = pygame.Rect(x - 139, y - 185, 278, 77)
+            rounded_rect(self.screen, bubble, (255, 250, 225), 12, WOOD_DARK, 3)
+            pygame.draw.polygon(
+                self.screen,
+                (255, 250, 225),
+                [(x - 10, bubble.bottom - 2), (x + 8, bubble.bottom - 2), (x, bubble.bottom + 14)],
+            )
+            pygame.draw.lines(
+                self.screen,
+                WOOD_DARK,
+                False,
+                [(x - 10, bubble.bottom), (x, bubble.bottom + 14), (x + 8, bubble.bottom)],
+                3,
+            )
+            self.text("앞 손님의 주문", 13, BLUEBERRY_DARK, bubble.centerx, bubble.y + 17,
+                      center=True)
+            self.text(
+                f"블루베리 3  꿀 {order.honey}  우유 {order.milk}  얼음 {order.ice}",
+                14,
+                INK,
+                bubble.centerx,
+                bubble.y + 40,
+                center=True,
+            )
+            self.text(f"받을 돈  {order.price}코인", 13, RED, bubble.centerx, bubble.y + 61,
+                      center=True)
 
     def draw_farm_fence(self) -> None:
         farm = self.rect_to_screen(pygame.Rect(225, 350, 720, 550))
@@ -1124,32 +1168,42 @@ class GameApp:
         self.draw_house(CAFE, "블루베리 블렌더", (229, 205, 238), (112, 79, 157))
         self.draw_market()
         self.draw_smoothie_cart()
-        customers: list[tuple[tuple[float, float], int, bool]] = [
-            (point, self.state.smoothies_sold + index, False)
+        customers: list[
+            tuple[tuple[float, float], int, bool, CustomerOrder | None, bool]
+        ] = [
+            (
+                point,
+                self.state.smoothies_sold + index,
+                False,
+                self.state.customer_orders[index]
+                if index < len(self.state.customer_orders)
+                else None,
+                index == 0,
+            )
             for index, point in enumerate(
                 CUSTOMER_QUEUE_POINTS[:self.state.customers_waiting]
             )
         ]
         customers.extend(
-            ((customer.x, customer.y), customer.style, True)
+            ((customer.x, customer.y), customer.style, True, None, False)
             for customer in self.departing_customers
         )
         for tree in sorted((tree for tree in TREE_POSITIONS if tree[1] <= self.player.y), key=lambda item: item[1]):
             self.draw_tree(tree)
-        for point, style, departing in sorted(
+        for point, style, departing, order, front in sorted(
             (customer for customer in customers if customer[0][1] <= self.player.y),
             key=lambda customer: customer[0][1],
         ):
-            self.draw_customer(point, style, departing=departing)
+            self.draw_customer(point, style, departing=departing, order=order, front=front)
         self.draw_particles()
         self.draw_character()
         for tree in sorted((tree for tree in TREE_POSITIONS if tree[1] > self.player.y), key=lambda item: item[1]):
             self.draw_tree(tree)
-        for point, style, departing in sorted(
+        for point, style, departing, order, front in sorted(
             (customer for customer in customers if customer[0][1] > self.player.y),
             key=lambda customer: customer[0][1],
         ):
-            self.draw_customer(point, style, departing=departing)
+            self.draw_customer(point, style, departing=departing, order=order, front=front)
         self.draw_interaction_marker()
 
     def current_objective(self) -> str:
@@ -1158,12 +1212,15 @@ class GameApp:
             return "익은 블루베리 나무 가까이 가서 E로 수확하세요."
         if state.blueberries < 3 and state.smoothies_sold == 0:
             return "밭을 돌보거나 남쪽 시장에서 생과를 팔아 보세요."
-        if state.smoothies_sold == 0 and (state.honey < 1 or state.milk < 1 or state.ice < 1):
-            return "동쪽 재료 상점에서 꿀·우유·얼음을 사세요."
-        if state.smoothies < 1 and state.smoothies_sold == 0:
-            return "보라색 블렌더 건물 앞에서 E로 스무디를 만드세요."
-        if state.smoothies_sold == 0:
-            return "남동쪽 스무디 카트로 가서 손님에게 직접 판매하세요."
+        order = state.current_order
+        if order is None:
+            return "새 손님과 주문을 기다리고 있어요."
+        if state.smoothies < 1:
+            return (
+                f"앞 주문: 블루베리 3 · 꿀 {order.honey} · 우유 {order.milk} · "
+                f"얼음 {order.ice} → {order.price}코인"
+            )
+        return f"완성된 주문 스무디를 카트에서 팔면 {order.price}코인을 받아요."
         if state.active_plots == 4:
             return "밭 오른쪽의 확장 간판에서 농장 땅을 늘려 보세요."
         return "농장을 키워 스무디를 더 많이 판매하세요!"
@@ -1302,8 +1359,8 @@ class GameApp:
             ("이동", "WASD 또는 방향키", "밭과 마을을 자유롭게 걸어 다녀요."),
             ("밭", "나무 가까이에서 E", "빈 밭에는 씨앗을 심고 익은 나무는 직접 수확해요."),
             ("재료 상점", "동쪽 초록 지붕", "꿀·우유·얼음과 씨앗을 구매해요."),
-            ("제조", "보라색 블렌더 건물", "블루베리 3 + 꿀 1 + 우유 1 + 얼음 1로 만들어요."),
-            ("판매", "남쪽 시장과 카트", "생과 또는 스무디를 손님에게 직접 판매해요."),
+            ("주문", "맨 앞 손님의 말풍선", "꿀·우유·얼음 수량과 받을 돈을 먼저 확인해요."),
+            ("제조·판매", "블렌더와 남쪽 카트", "주문 수량대로 만든 뒤 손님에게 직접 판매해요."),
         ]
         y = 183
         for title, control, body in rows:

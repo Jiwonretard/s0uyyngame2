@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import time
 import unittest
 import wave
 
@@ -27,13 +28,13 @@ class RecordingChannel:
 
 
 class SaleAudioTests(unittest.TestCase):
-    def test_audio_keeps_the_original_leading_preroll(self):
+    def test_audio_keeps_original_and_extra_leading_preroll(self):
         with wave.open(str(main.SALE_SOUND_PATH), "rb") as sound:
             self.assertEqual(sound.getframerate(), 44_100)
             self.assertEqual(sound.getnchannels(), 2)
-            self.assertGreaterEqual(sound.getnframes() / sound.getframerate(), 4.82)
+            self.assertGreaterEqual(sound.getnframes() / sound.getframerate(), 5.32)
 
-            leading_audio = sound.readframes(round(sound.getframerate() * 0.42))
+            leading_audio = sound.readframes(round(sound.getframerate() * 0.92))
             self.assertLessEqual(audioop.max(leading_audio, sound.getsampwidth()), 8)
 
             audible_audio = sound.readframes(round(sound.getframerate() * 0.8))
@@ -61,6 +62,25 @@ class SaleAudioTests(unittest.TestCase):
                 self.assertEqual(app.state.customers_waiting, main.CUSTOMER_QUEUE_SIZE - 1)
                 self.assertEqual(channel.play_count, 1)
                 self.assertEqual(len(app.departing_customers), 1)
+                self.assertLessEqual(app.current_bgm_volume, main.BGM_DUCK_VOLUME)
+                self.assertGreater(app.bgm_duck_until, time.time())
+                app.bgm_duck_until = 0
+                app.update(1.0)
+                self.assertAlmostEqual(app.current_bgm_volume, main.BGM_NORMAL_VOLUME)
+            finally:
+                pygame.quit()
+                main.SAVE_PATH = original_save_path
+
+    def test_original_background_music_loads_and_loops(self):
+        with tempfile.TemporaryDirectory() as temp_directory:
+            original_save_path = main.SAVE_PATH
+            main.SAVE_PATH = Path(temp_directory) / "save.json"
+            try:
+                app = main.GameApp()
+                self.assertEqual(app.music_error, "")
+                music = pygame.mixer.Sound(str(main.BGM_PATH))
+                self.assertGreaterEqual(music.get_length(), 38.3)
+                self.assertTrue(pygame.mixer.music.get_busy())
             finally:
                 pygame.quit()
                 main.SAVE_PATH = original_save_path
@@ -78,6 +98,8 @@ class SaleAudioTests(unittest.TestCase):
                 app.update(0.01)
 
                 self.assertEqual(app.state.customers_waiting, 1)
+                self.assertEqual(len(app.state.customer_orders), 1)
+                self.assertIsNotNone(app.state.current_order)
                 self.assertEqual(len(main.CUSTOMER_QUEUE_POINTS), main.CUSTOMER_QUEUE_SIZE)
             finally:
                 pygame.quit()

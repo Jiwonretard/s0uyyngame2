@@ -26,6 +26,7 @@ from game_state import (  # noqa: E402
     LEGACY_GAME_DAY_SECONDS,
     RAW_BERRY_PRICE,
     REGROW_SECONDS,
+    SMOOTHIE_PRICE_MULTIPLIER,
     SPECIAL_SMOOTHIE_BONUS,
     TREE_DROP_TABLE,
     VIP_TITLES,
@@ -111,6 +112,17 @@ class GameStateTests(unittest.TestCase):
         light = CustomerOrder(blueberries=3, honey=0, milk=1, ice=1)
         loaded = CustomerOrder(blueberries=3, honey=2, milk=2, ice=3)
         self.assertGreater(loaded.price, light.price)
+
+    def test_every_smoothie_sale_price_is_increased_by_twenty_percent(self):
+        state = GameState.new(now=100.0)
+        order = CustomerOrder(3, 1, 1, 2, wait_seconds=50.0)
+        old_price = order.price + state.customer_tip(order)
+
+        self.assertEqual(
+            state.smoothie_sale_price(order),
+            round(old_price * SMOOTHIE_PRICE_MULTIPLIER),
+        )
+        self.assertEqual(SMOOTHIE_PRICE_MULTIPLIER, 1.20)
 
     def test_bundled_korean_names_are_large_and_current_queue_is_unique(self):
         self.assertTrue(CUSTOMER_NAME_DATA_PATH.exists())
@@ -414,7 +426,10 @@ class GameStateTests(unittest.TestCase):
         self.assertTrue(order.vip)
         self.assertEqual(
             state.smoothie_sale_price(order),
-            (order.price + state.customer_tip(order)) * 2,
+            round(
+                (order.price + state.customer_tip(order))
+                * SMOOTHIE_PRICE_MULTIPLIER
+            ) * 2,
         )
 
     def test_customer_patience_tips_regulars_and_vip_reputation(self):

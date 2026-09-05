@@ -177,9 +177,11 @@ TREE_DROP_TABLE = (
     (0.99, "low_fat_milk"),
     (1.00, "seeds"),
 )
-# Kept as the familiar reference price for older code and save files. New
-# customer orders use CustomerOrder.price, which rises with every ingredient.
-SMOOTHIE_PRICE = 20
+# Kept as a reference price for older code and save files. New customer orders
+# use CustomerOrder.price, which rises with every ingredient, then receive the
+# global 20% sale-price increase below.
+SMOOTHIE_PRICE = 24
+SMOOTHIE_PRICE_MULTIPLIER = 1.20
 SMOOTHIE_BASE_PRICE = 8
 ORDER_INGREDIENT_REWARDS = {
     "blueberries": 2,
@@ -519,6 +521,7 @@ class GameState:
         price = selected_order.price + self.customer_tip(selected_order)
         if weather_for_day(selected_day) == "heat":
             price += 3
+        price = round(price * SMOOTHIE_PRICE_MULTIPLIER)
         if is_blueberry_festival(selected_day):
             price *= 2
         if self.prepared_order is not None and self.prepared_order == selected_order:

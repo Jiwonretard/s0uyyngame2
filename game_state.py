@@ -23,6 +23,11 @@ CUSTOMER_QUEUE_SIZE = 6
 GROW_SECONDS = 24.0
 REGROW_SECONDS = 17.0
 HARVEST_YIELD = 4
+BAG_STACK_SIZE = 16
+BAG_COLUMNS = 4
+BAG_ROWS = 4
+BAG_SLOT_COUNT = BAG_COLUMNS * BAG_ROWS
+BAG_ITEM_KEYS = ("blueberries", "seeds", "honey", "milk", "ice")
 
 ITEM_COSTS = {
     "seeds": 6,
@@ -36,6 +41,11 @@ ITEM_LABELS = {
     "honey": "꿀",
     "milk": "우유",
     "ice": "얼음",
+}
+
+BAG_ITEM_LABELS = {
+    "blueberries": "블루베리",
+    **ITEM_LABELS,
 }
 
 RAW_BERRY_PRICE = 3
@@ -161,6 +171,28 @@ class GameState:
     def inventory(self, key: str) -> int:
         return int(getattr(self, key))
 
+    def bag_stacks(self) -> list[tuple[str, int]]:
+        stacks: list[tuple[str, int]] = []
+        for key in BAG_ITEM_KEYS:
+            remaining = max(0, self.inventory(key))
+            while remaining:
+                amount = min(BAG_STACK_SIZE, remaining)
+                stacks.append((key, amount))
+                remaining -= amount
+        return stacks
+
+    @property
+    def bag_slots_used(self) -> int:
+        return len(self.bag_stacks())
+
+    def can_add_to_bag(self, key: str, amount: int = 1) -> bool:
+        if key not in BAG_ITEM_KEYS or amount <= 0:
+            return True
+        current = max(0, self.inventory(key))
+        current_stacks = (current + BAG_STACK_SIZE - 1) // BAG_STACK_SIZE
+        future_stacks = (current + amount + BAG_STACK_SIZE - 1) // BAG_STACK_SIZE
+        return self.bag_slots_used + future_stacks - current_stacks <= BAG_SLOT_COUNT
+
     def _sync_customer_orders(self) -> None:
         self.customers_waiting = max(
             0, min(CUSTOMER_QUEUE_SIZE, int(self.customers_waiting))
@@ -215,6 +247,8 @@ class GameState:
             return False, "빈 밭이에요. 눌러서 씨앗을 심어 주세요."
         if not plot.is_ready(current):
             return False, f"조금만 기다려 주세요. {int(plot.remaining(current)) + 1}초 남았어요."
+        if not self.can_add_to_bag("blueberries", HARVEST_YIELD):
+            return False, "가방이 가득 차서 수확할 수 없어요. B를 눌러 가방을 확인하세요."
         self.blueberries += HARVEST_YIELD
         self.berries_harvested += HARVEST_YIELD
         self.plots[plot_index] = Plot(
@@ -239,6 +273,8 @@ class GameState:
         cost = ITEM_COSTS[key]
         if self.money < cost:
             return False, f"돈이 부족해요. {cost}코인이 필요해요."
+        if not self.can_add_to_bag(key, 1):
+            return False, "가방 16칸이 모두 찼어요. 재료를 사용하거나 판매해 주세요."
         self.money -= cost
         setattr(self, key, self.inventory(key) + 1)
         return True, f"{ITEM_LABELS[key]} 1개를 샀어요."

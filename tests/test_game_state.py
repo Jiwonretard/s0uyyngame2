@@ -8,6 +8,8 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from game_state import (  # noqa: E402
+    BAG_SLOT_COUNT,
+    BAG_STACK_SIZE,
     CUSTOMER_QUEUE_SIZE,
     CustomerOrder,
     GROW_SECONDS,
@@ -132,6 +134,39 @@ class GameStateTests(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(state.money, 0)
         self.assertEqual(state.land_cost, second_cost + LAND_COST_STEP)
+
+    def test_bag_has_sixteen_slots_with_sixteen_items_per_stack(self):
+        state = GameState.new(now=100.0)
+        state.blueberries = BAG_SLOT_COUNT * BAG_STACK_SIZE
+        state.seeds = state.honey = state.milk = state.ice = 0
+
+        self.assertEqual(state.bag_slots_used, BAG_SLOT_COUNT)
+        self.assertEqual(len(state.bag_stacks()), BAG_SLOT_COUNT)
+        self.assertTrue(all(amount == BAG_STACK_SIZE for _key, amount in state.bag_stacks()))
+        self.assertFalse(state.can_add_to_bag("blueberries", 1))
+
+        state.blueberries -= 1
+        self.assertTrue(state.can_add_to_bag("blueberries", 1))
+        self.assertFalse(state.can_add_to_bag("blueberries", 2))
+
+    def test_full_bag_blocks_harvest_and_purchase_without_losing_money(self):
+        state = GameState.new(now=100.0)
+        state.blueberries = BAG_SLOT_COUNT * BAG_STACK_SIZE
+        state.seeds = state.honey = state.milk = state.ice = 0
+        state.money = 100
+        ready_at = state.plots[0].ready_at
+
+        ok, harvest_message = state.harvest(0, now=100.0)
+        self.assertFalse(ok)
+        self.assertIn("가방", harvest_message)
+        self.assertEqual(state.blueberries, BAG_SLOT_COUNT * BAG_STACK_SIZE)
+        self.assertEqual(state.plots[0].ready_at, ready_at)
+
+        ok, purchase_message = state.buy_item("honey")
+        self.assertFalse(ok)
+        self.assertIn("가방", purchase_message)
+        self.assertEqual(state.money, 100)
+        self.assertEqual(state.honey, 0)
 
     def test_customers_leave_the_queue_one_at_a_time(self):
         state = GameState.new(now=100.0)

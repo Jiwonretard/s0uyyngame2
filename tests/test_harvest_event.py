@@ -138,6 +138,47 @@ class HarvestEventTests(unittest.TestCase):
         self.app.state.game_elapsed_seconds = main.DAY_SECONDS
         self.assertEqual(self.app.game_clock()[:3], (2, 6, 0))
 
+    def test_b_key_opens_four_by_four_bag_and_e_closes_it(self):
+        self.app.state.blueberries = 17
+        self.app.state.seeds = 1
+        self.app.state.honey = self.app.state.milk = self.app.state.ice = 0
+        open_event = pygame.event.Event(
+            pygame.KEYDOWN,
+            key=pygame.K_b,
+            scancode=pygame.KSCAN_B,
+            mod=0,
+        )
+        self.app.handle_key(open_event)
+
+        self.assertEqual(self.app.overlay, "bag")
+        self.assertEqual(main.BAG_COLUMNS * main.BAG_ROWS, 16)
+        self.assertEqual(
+            self.app.state.bag_stacks(),
+            [("blueberries", 16), ("blueberries", 1), ("seeds", 1)],
+        )
+        self.app.draw()
+
+        close_event = pygame.event.Event(
+            pygame.KEYDOWN,
+            key=pygame.K_e,
+            scancode=pygame.KSCAN_E,
+            mod=0,
+        )
+        self.app.handle_key(close_event)
+        self.assertIsNone(self.app.overlay)
+
+    def test_physical_b_scancode_opens_bag_with_non_latin_input(self):
+        event = pygame.event.Event(
+            pygame.KEYDOWN,
+            key=0,
+            scancode=pygame.KSCAN_B,
+            mod=0,
+        )
+
+        self.app.handle_key(event)
+
+        self.assertEqual(self.app.overlay, "bag")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -16,6 +16,11 @@ import time
 import pygame
 
 from game_state import (
+    BAG_COLUMNS,
+    BAG_ITEM_LABELS,
+    BAG_ROWS,
+    BAG_SLOT_COUNT,
+    BAG_STACK_SIZE,
     CUSTOMER_QUEUE_SIZE,
     CustomerOrder,
     GROW_SECONDS,
@@ -827,6 +832,17 @@ class GameApp:
             elif self.overlay is None:
                 self.overlay = "help"
             return
+        if (
+            event.key == pygame.K_b
+            or getattr(event, "scancode", None) == pygame.KSCAN_B
+        ):
+            if self.overlay == "blending":
+                return
+            if self.overlay == "bag":
+                self.overlay = None
+            elif self.overlay is None:
+                self.overlay = "bag"
+            return
         if event.key == pygame.K_m:
             self.bgm_muted = not self.bgm_muted
             self.current_bgm_volume = 0.0 if self.bgm_muted else BGM_NORMAL_VOLUME
@@ -836,6 +852,10 @@ class GameApp:
             return
         if event.key == pygame.K_s and (event.mod & (pygame.KMOD_CTRL | pygame.KMOD_META)):
             self.save(announce=True)
+            return
+        if self.overlay == "bag":
+            if self.is_interaction_key(event):
+                self.overlay = None
             return
         if self.overlay == "blender":
             shortcuts = {
@@ -903,6 +923,10 @@ class GameApp:
                 if rect.collidepoint(position):
                     self.buy_item(key)
                     return
+        if self.overlay == "bag":
+            if pygame.Rect(510, 614, 260, 48).collidepoint(position):
+                self.overlay = None
+            return
         if self.overlay is None and pygame.Rect(1168, 18, 92, 38).collidepoint(position):
             self.overlay = "help"
 
@@ -1026,10 +1050,14 @@ class GameApp:
             ])
         pygame.draw.line(self.screen, WOOD_DARK, (rect.x + 20, rect.y + 55), (rect.right - 20, rect.y + 55), 5)
         self.text("블루베리 생과 시장", 20, INK, rect.centerx, rect.y + 92, center=True)
-        for i in range(5):
-            bx = rect.centerx - 38 + i * 19
-            pygame.draw.rect(self.screen, BLUEBERRY_DARK, (bx - 7, rect.y + 126, 15, 15))
-            pygame.draw.rect(self.screen, BLUEBERRY, (bx - 5, rect.y + 128, 11, 11))
+        icon = self.ingredient_icons.get("blueberries")
+        if icon is not None:
+            self.screen.blit(icon, icon.get_rect(center=(rect.centerx, rect.y + 130)))
+        else:
+            for i in range(5):
+                bx = rect.centerx - 38 + i * 19
+                pygame.draw.rect(self.screen, BLUEBERRY_DARK, (bx - 7, rect.y + 126, 15, 15))
+                pygame.draw.rect(self.screen, BLUEBERRY, (bx - 5, rect.y + 128, 11, 11))
         self.text(f"한 알 {RAW_BERRY_PRICE}코인", 15, MUTED, rect.centerx, rect.y + 161, center=True)
 
     def draw_smoothie_cart(self) -> None:
@@ -1720,6 +1748,113 @@ class GameApp:
         self.text(f"완성까지 {seconds_left:.1f}초", 16, INK,
                   bar.centerx, 638, center=True)
 
+    def draw_bag_overlay(self) -> None:
+        shade = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
+        shade.fill((31, 26, 39, 178))
+        self.screen.blit(shade, (0, 0))
+
+        card = pygame.Rect(312, 30, 656, 660)
+        pygame.draw.rect(self.screen, (28, 25, 30), card.move(11, 11))
+        pygame.draw.rect(self.screen, WOOD_DARK, card.inflate(14, 14))
+        pygame.draw.rect(self.screen, WOOD, card)
+        pygame.draw.rect(self.screen, CREAM, card.inflate(-18, -18))
+        self.text("재료 가방", 32, BLUEBERRY_DARK, card.centerx, 70, center=True)
+        self.text(
+            f"4×4 총 {BAG_SLOT_COUNT}칸 · 한 칸에 같은 재료 최대 {BAG_STACK_SIZE}개",
+            16,
+            MUTED,
+            card.centerx,
+            108,
+            center=True,
+        )
+
+        stacks = self.state.bag_stacks()
+        used = len(stacks)
+        meter = pygame.Rect(438, 129, 404, 18)
+        rounded_rect(self.screen, meter, (215, 191, 146), 7, WOOD_DARK, 2)
+        fill_width = round((meter.width - 6) * min(used, BAG_SLOT_COUNT) / BAG_SLOT_COUNT)
+        if fill_width:
+            pygame.draw.rect(
+                self.screen,
+                (114, 137, 76) if used < BAG_SLOT_COUNT else RED,
+                (meter.x + 3, meter.y + 3, fill_width, meter.height - 6),
+                border_radius=5,
+            )
+        self.text(f"{used}/{BAG_SLOT_COUNT}칸 사용", 13, INK,
+                  meter.centerx, meter.centery, center=True)
+
+        slot_w, slot_h, gap = 126, 94, 12
+        start_x, start_y = 370, 165
+        visible_stacks = stacks[:BAG_SLOT_COUNT]
+        for index in range(BAG_SLOT_COUNT):
+            column = index % BAG_COLUMNS
+            row = index // BAG_COLUMNS
+            rect = pygame.Rect(
+                start_x + column * (slot_w + gap),
+                start_y + row * (slot_h + gap),
+                slot_w,
+                slot_h,
+            )
+            pygame.draw.rect(self.screen, (92, 65, 52), rect.move(4, 5), border_radius=8)
+            pygame.draw.rect(self.screen, (250, 236, 198), rect, border_radius=8)
+            pygame.draw.rect(self.screen, (172, 137, 88), rect, 3, border_radius=8)
+            self.text(f"{index + 1:02d}", 13, (176, 151, 115), rect.x + 8, rect.y + 6)
+
+            if index >= len(visible_stacks):
+                pygame.draw.rect(
+                    self.screen,
+                    (223, 205, 167),
+                    pygame.Rect(rect.centerx - 11, rect.centery - 11, 22, 22),
+                    3,
+                    border_radius=6,
+                )
+                continue
+
+            key, amount = visible_stacks[index]
+            icon = self.ingredient_icons.get(key)
+            icon_center = (rect.x + 38, rect.y + 50)
+            if icon is not None:
+                self.screen.blit(icon, icon.get_rect(center=icon_center))
+            elif key == "seeds":
+                pygame.draw.ellipse(
+                    self.screen, (97, 68, 34),
+                    (icon_center[0] - 12, icon_center[1] - 7, 16, 23),
+                )
+                pygame.draw.ellipse(
+                    self.screen, (222, 177, 62),
+                    (icon_center[0] - 9, icon_center[1] - 5, 10, 17),
+                )
+                pygame.draw.line(
+                    self.screen, GREEN_DARK,
+                    (icon_center[0] + 1, icon_center[1] - 5),
+                    (icon_center[0] + 10, icon_center[1] - 17), 4,
+                )
+                pygame.draw.ellipse(
+                    self.screen, LEAF,
+                    (icon_center[0] + 6, icon_center[1] - 20, 15, 10),
+                )
+            self.text(BAG_ITEM_LABELS[key], 15, INK, rect.x + 69, rect.y + 24)
+            badge = pygame.Rect(rect.x + 68, rect.y + 49, 48, 29)
+            rounded_rect(self.screen, badge, BLUEBERRY_DARK, 8)
+            self.text(f"×{amount}", 16, WHITE, badge.centerx, badge.centery, center=True)
+
+        if used > BAG_SLOT_COUNT:
+            self.text(
+                "이전 저장에 16칸을 넘는 재료가 있어요. 재료를 사용하면 정상 용량으로 돌아옵니다.",
+                13,
+                RED,
+                card.centerx,
+                594,
+                center=True,
+            )
+        else:
+            self.text("블루베리·씨앗·꿀·우유·얼음이 종류별로 자동 정리됩니다.",
+                      13, MUTED, card.centerx, 594, center=True)
+
+        close = pygame.Rect(510, 614, 260, 48)
+        rounded_rect(self.screen, close, BLUEBERRY, 10, WOOD_DARK, 4)
+        self.text("가방 닫기  B / E", 18, WHITE, close.centerx, close.centery, center=True)
+
     def draw_help_overlay(self) -> None:
         shade = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
         shade.fill((31, 26, 39, 175))
@@ -1733,7 +1868,7 @@ class GameApp:
         self.text("화면 속 장소로 캐릭터를 이동한 뒤 E를 눌러 운영하세요.", 17, MUTED,
                   card.centerx, 145, center=True)
         rows = [
-            ("이동", "WASD 또는 방향키", "밭과 마을을 자유롭게 걸어 다녀요."),
+            ("이동·가방", "WASD · B 가방", "마을을 걸어 다니고 4×4 재료 가방을 확인해요."),
             ("밭", "나무 가까이에서 E", "빈 밭에는 씨앗을 심고 익은 나무는 직접 수확해요."),
             ("재료 상점", "동쪽 초록 지붕", "꿀·우유·얼음과 씨앗을 구매해요."),
             ("주문", "맨 앞 손님의 말풍선", "꿀·우유·얼음 수량과 받을 돈을 먼저 확인해요."),
@@ -1774,6 +1909,8 @@ class GameApp:
             self.draw_blender_overlay()
         elif self.overlay == "blending":
             self.draw_blending_overlay()
+        elif self.overlay == "bag":
+            self.draw_bag_overlay()
         elif self.overlay == "help":
             self.draw_help_overlay()
         pygame.display.flip()

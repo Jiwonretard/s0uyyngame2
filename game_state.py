@@ -126,9 +126,10 @@ TREE_DROP_TABLE = (
     (0.60, "milk"),
     (0.80, "ice"),
     (0.85, "coins"),
-    (0.90, "golden_blueberries"),
-    (0.95, "premium_honey"),
-    (1.00, "low_fat_milk"),
+    (0.93, "golden_blueberries"),
+    (0.96, "premium_honey"),
+    (0.99, "low_fat_milk"),
+    (1.00, "seeds"),
 )
 # Kept as the familiar reference price for older code and save files. New
 # customer orders use CustomerOrder.price, which rises with every ingredient.
@@ -195,7 +196,7 @@ def tree_drop_key_for_roll(roll: float) -> str:
     for upper_bound, key in TREE_DROP_TABLE:
         if normalized < upper_bound:
             return key
-    return "low_fat_milk"
+    return "seeds"
 
 
 @dataclass(eq=True)
@@ -558,7 +559,7 @@ class GameState:
         key = tree_drop_key_for_roll(picker.random())
         if key == "coins":
             amount = picker.randint(100, 250)
-        elif key in ("golden_blueberries", "premium_honey", "low_fat_milk"):
+        elif key in ("golden_blueberries", "premium_honey", "low_fat_milk", "seeds"):
             amount = 1
         else:
             amount = picker.randint(1, 3)

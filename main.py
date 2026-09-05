@@ -464,6 +464,52 @@ class GameApp:
             pygame.draw.circle(self.screen, GOLD, center, radius)
             pygame.draw.circle(self.screen, (255, 220, 91), center, max(4, radius - 7))
             return True
+        if key == "seeds":
+            scale = 0.72 if small else 1.0
+            seed_w = max(9, round(16 * scale))
+            seed_h = max(14, round(23 * scale))
+            pygame.draw.ellipse(
+                self.screen,
+                WOOD_DARK,
+                (
+                    center[0] - seed_w // 2 - 2,
+                    center[1] - seed_h // 2 - 2,
+                    seed_w + 4,
+                    seed_h + 4,
+                ),
+            )
+            pygame.draw.ellipse(
+                self.screen,
+                GOLD,
+                (
+                    center[0] - seed_w // 2,
+                    center[1] - seed_h // 2,
+                    seed_w,
+                    seed_h,
+                ),
+            )
+            stem_end = (
+                center[0] + round(11 * scale),
+                center[1] - round(17 * scale),
+            )
+            pygame.draw.line(
+                self.screen,
+                GREEN_DARK,
+                (center[0] + round(2 * scale), center[1] - round(7 * scale)),
+                stem_end,
+                max(2, round(4 * scale)),
+            )
+            pygame.draw.ellipse(
+                self.screen,
+                LEAF,
+                (
+                    stem_end[0] - 2,
+                    stem_end[1] - 5,
+                    max(8, round(14 * scale)),
+                    max(6, round(9 * scale)),
+                ),
+            )
+            return True
         base_key = {
             "golden_blueberries": "blueberries",
             "premium_honey": "honey",

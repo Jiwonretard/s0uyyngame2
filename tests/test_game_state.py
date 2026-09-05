@@ -168,9 +168,10 @@ class GameStateTests(unittest.TestCase):
                 (0.60, "milk"),
                 (0.80, "ice"),
                 (0.85, "coins"),
-                (0.90, "golden_blueberries"),
-                (0.95, "premium_honey"),
-                (1.00, "low_fat_milk"),
+                (0.93, "golden_blueberries"),
+                (0.96, "premium_honey"),
+                (0.99, "low_fat_milk"),
+                (1.00, "seeds"),
             ),
         )
         threshold_cases = (
@@ -180,8 +181,9 @@ class GameStateTests(unittest.TestCase):
             (0.60, "ice"),
             (0.80, "coins"),
             (0.85, "golden_blueberries"),
-            (0.90, "premium_honey"),
-            (0.95, "low_fat_milk"),
+            (0.93, "premium_honey"),
+            (0.96, "low_fat_milk"),
+            (0.99, "seeds"),
         )
         for roll, expected in threshold_cases:
             self.assertEqual(tree_drop_key_for_roll(roll), expected)
@@ -206,6 +208,12 @@ class GameStateTests(unittest.TestCase):
         self.assertEqual((key, amount), ("blueberries", 3))
         self.assertEqual(state.blueberries, 3)
         self.assertEqual(state.trees_shaken, 2)
+
+        seeds_before = state.seeds
+        ok, _, key, amount = state.shake_tree(3, FixedRng(0.995, 3), day=2)
+        self.assertTrue(ok)
+        self.assertEqual((key, amount), ("seeds", 1))
+        self.assertEqual(state.seeds, seeds_before + 1)
 
     def test_golden_blueberry_sells_for_two_hundred_coins(self):
         state = GameState.new(now=100.0)

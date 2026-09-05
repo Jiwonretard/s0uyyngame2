@@ -45,7 +45,7 @@ class HarvestEventTests(unittest.TestCase):
 
     def test_tree_shake_drops_item_once_per_game_day_with_visible_impact(self):
         self.app.rng = Mock()
-        self.app.rng.random.return_value = 0.91
+        self.app.rng.random.return_value = 0.94
         self.app.rng.randint.return_value = 0
         self.app.rng.uniform.side_effect = lambda start, end: (start + end) / 2
         tree_index = 0

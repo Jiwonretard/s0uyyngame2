@@ -13,6 +13,7 @@ from game_state import (  # noqa: E402
     GROW_SECONDS,
     HARVEST_YIELD,
     LAND_BASE_COST,
+    LAND_COST_STEP,
     RAW_BERRY_PRICE,
     REGROW_SECONDS,
     GameState,
@@ -88,6 +89,29 @@ class GameStateTests(unittest.TestCase):
         self.assertIn("얼음 2", message)
         self.assertEqual(state.smoothies, 0)
 
+    def test_manual_blender_rejects_wrong_recipe_without_using_ingredients(self):
+        state = GameState.new(now=100.0)
+        order = CustomerOrder(3, 2, 1, 2)
+        state.customers_waiting = 1
+        state.customer_orders = [order]
+        state.blueberries = 5
+        state.honey = 3
+        state.milk = 2
+        state.ice = 4
+        before = (state.blueberries, state.honey, state.milk, state.ice)
+
+        ok, message = state.make_smoothie({
+            "blueberries": 3,
+            "honey": 1,
+            "milk": 1,
+            "ice": 3,
+        })
+
+        self.assertFalse(ok)
+        self.assertIn("꿀 1개 더 넣기", message)
+        self.assertIn("얼음 1개 빼기", message)
+        self.assertEqual((state.blueberries, state.honey, state.milk, state.ice), before)
+
     def test_raw_berry_sale_and_land_price_progression(self):
         state = GameState.new(now=100.0)
         state.blueberries = 1
@@ -101,7 +125,13 @@ class GameStateTests(unittest.TestCase):
         ok, _ = state.buy_land()
         self.assertTrue(ok)
         self.assertEqual(state.money, 0)
-        self.assertGreater(state.land_cost, first_cost)
+        self.assertEqual(state.land_cost, first_cost + LAND_COST_STEP)
+        second_cost = state.land_cost
+        state.money = second_cost
+        ok, _ = state.buy_land()
+        self.assertTrue(ok)
+        self.assertEqual(state.money, 0)
+        self.assertEqual(state.land_cost, second_cost + LAND_COST_STEP)
 
     def test_customers_leave_the_queue_one_at_a_time(self):
         state = GameState.new(now=100.0)
@@ -121,6 +151,7 @@ class GameStateTests(unittest.TestCase):
             state = GameState.new(now=100.0)
             state.money = 123
             state.blueberries = 9
+            state.game_elapsed_seconds = 123.5
             state.customers_waiting = 2
             state.customer_orders = [
                 CustomerOrder(3, 0, 1, 2),
@@ -131,6 +162,7 @@ class GameStateTests(unittest.TestCase):
             loaded = GameState.load(path, now=101.0)
             self.assertEqual(loaded.money, 123)
             self.assertEqual(loaded.blueberries, 9)
+            self.assertEqual(loaded.game_elapsed_seconds, 123.5)
             self.assertTrue(loaded.plots[1].planted)
             self.assertEqual(loaded.plots[1].ready_at, 100.0 + GROW_SECONDS)
             self.assertEqual(loaded.customers_waiting, 2)
@@ -155,6 +187,18 @@ class GameStateTests(unittest.TestCase):
             self.assertEqual(loaded.money, 777)
             self.assertEqual(loaded.smoothies, 2)
             self.assertEqual(len(loaded.customer_orders), CUSTOMER_QUEUE_SIZE)
+
+            order = loaded.current_order
+            self.assertIsNotNone(order)
+            for key, amount in order.recipe.items():
+                setattr(loaded, key, amount)
+            ok, _ = loaded.make_smoothie(order.recipe)
+            self.assertTrue(ok)
+            self.assertEqual(loaded.smoothies, 3)
+            ok, _ = loaded.sell_smoothie()
+            self.assertTrue(ok)
+            self.assertEqual(loaded.smoothies, 2)
+            self.assertIsNone(loaded.prepared_order)
 
     def test_corrupt_save_falls_back_to_new_game(self):
         with tempfile.TemporaryDirectory() as directory:

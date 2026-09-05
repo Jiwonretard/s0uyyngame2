@@ -138,6 +138,7 @@ class GameState:
     berries_harvested: int = 0
     land_purchased: int = 0
     started_at: float = field(default_factory=time.time)
+    game_elapsed_seconds: float = 0.0
     player_x: float = 360.0
     player_y: float = 380.0
     tutorial_seen: bool = False
@@ -250,25 +251,42 @@ class GameState:
         self.berries_sold += 1
         return True, f"블루베리 1개를 팔아 {RAW_BERRY_PRICE}코인을 벌었어요."
 
-    def make_smoothie(self) -> tuple[bool, str]:
+    def make_smoothie(
+        self,
+        selected_recipe: dict[str, int] | None = None,
+    ) -> tuple[bool, str]:
         order = self.current_order
         if order is None:
             return False, "지금은 주문한 손님이 없어요. 새 손님을 잠시 기다려 주세요."
-        if self.smoothies >= 1:
+        if self.prepared_order is not None:
             return False, "이미 만든 주문 스무디가 있어요. 맨 앞 손님에게 먼저 판매해 주세요."
-        missing: list[str] = []
         labels = {
             "blueberries": "블루베리",
             "honey": "꿀",
             "milk": "우유",
             "ice": "얼음",
         }
-        for key, amount in order.recipe.items():
+        recipe = order.recipe if selected_recipe is None else {
+            key: max(0, int(selected_recipe.get(key, 0)))
+            for key in order.recipe
+        }
+        differences: list[str] = []
+        for key, ordered_amount in order.recipe.items():
+            difference = recipe[key] - ordered_amount
+            if difference < 0:
+                differences.append(f"{labels[key]} {abs(difference)}개 더 넣기")
+            elif difference > 0:
+                differences.append(f"{labels[key]} {difference}개 빼기")
+        if differences:
+            return False, "주문과 달라요: " + ", ".join(differences)
+
+        missing: list[str] = []
+        for key, amount in recipe.items():
             if self.inventory(key) < amount:
                 missing.append(f"{labels[key]} {amount - self.inventory(key)}")
         if missing:
             return False, "재료가 부족해요: " + ", ".join(missing)
-        for key, amount in order.recipe.items():
+        for key, amount in recipe.items():
             setattr(self, key, self.inventory(key) - amount)
         self.smoothies += 1
         self.prepared_order = CustomerOrder(**order.recipe)
@@ -287,8 +305,7 @@ class GameState:
         self.customer_orders.pop(0)
         self.money += order.price
         self.smoothies_sold += 1
-        if self.smoothies == 0:
-            self.prepared_order = None
+        self.prepared_order = None
         return True, f"주문 스무디 판매 성공! 재료만큼 {order.price}코인을 벌었어요."
 
     def buy_land(self) -> tuple[bool, str]:
@@ -341,6 +358,7 @@ class GameState:
             allowed = {field_name for field_name in cls.__dataclass_fields__}
             state = cls(**{key: value for key, value in raw.items() if key in allowed})
             state.active_plots = max(STARTING_PLOTS, min(MAX_PLOTS, int(state.active_plots)))
+            state.game_elapsed_seconds = max(0.0, float(state.game_elapsed_seconds))
             state.customers_waiting = max(
                 0, min(CUSTOMER_QUEUE_SIZE, int(state.customers_waiting))
             )

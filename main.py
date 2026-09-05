@@ -32,8 +32,9 @@ SCREEN_W, SCREEN_H = 1280, 720
 WORLD_W, WORLD_H = 2200, 1500
 FPS = 60
 PLAYER_SPEED = 235.0
-DAY_SECONDS = 480.0
+DAY_SECONDS = 720.0
 CUSTOMER_RETURN_SECONDS = 14.0
+BLENDER_DURATION = 3.0
 BASE_DIR = Path(__file__).resolve().parent
 SAVE_PATH = BASE_DIR / "save_game.json"
 SALE_SOUND_PATH = BASE_DIR / "assets" / "smoothie_sale.wav"
@@ -90,6 +91,13 @@ CUSTOMER_STYLES = [
     ((196, 137, 102), (45, 35, 42), (180, 103, 174)),
     ((235, 187, 146), (132, 73, 48), (224, 147, 61)),
     ((213, 156, 119), (73, 53, 42), (88, 166, 158)),
+]
+
+BLENDER_INGREDIENTS = [
+    ("blueberries", "블루베리", BLUEBERRY),
+    ("honey", "꿀", GOLD),
+    ("milk", "우유", (84, 149, 183)),
+    ("ice", "얼음", (79, 169, 194)),
 ]
 
 PLOT_RECTS = [
@@ -240,6 +248,12 @@ class GameApp:
         self.rng = random.Random(17)
         self.flowers = self._make_flowers()
         self.shop_buttons = self._make_shop_buttons()
+        self.blender_mix = {key: 0 for key, _label, _color in BLENDER_INGREDIENTS}
+        self.blender_message = "재료의 + 버튼을 눌러 맨 앞 손님의 주문과 똑같이 맞추세요."
+        self.blender_message_error = False
+        self.blender_animation_remaining = 0.0
+        self.blender_complete_message = ""
+        self.blender_cards = self._make_blender_cards()
         self._load_audio()
         self.player_frames: dict[str, list[pygame.Surface]] = {}
         self.player_sprite_error = ""
@@ -265,6 +279,16 @@ class GameApp:
             (pygame.Rect(402, 390, 222, 76), "milk", "우유", (84, 149, 183)),
             (pygame.Rect(656, 390, 222, 76), "ice", "얼음", (79, 169, 194)),
         ]
+
+    @staticmethod
+    def _make_blender_cards() -> list[tuple[pygame.Rect, str, str, tuple[int, int, int]]]:
+        cards = []
+        for index, (key, label, color) in enumerate(BLENDER_INGREDIENTS):
+            col, row = index % 2, index // 2
+            cards.append(
+                (pygame.Rect(280 + col * 370, 258 + row * 137, 330, 112), key, label, color)
+            )
+        return cards
 
     def _load_audio(self) -> None:
         try:
@@ -417,6 +441,10 @@ class GameApp:
 
     def update(self, dt: float) -> None:
         self.move_player(dt)
+        if self.overlay is None:
+            # The farm calendar advances only while the player is actually in
+            # the world. Closing the game or opening a menu pauses the clock.
+            self.state.game_elapsed_seconds += max(0.0, dt)
         target = pygame.Vector2(
             max(0, min(WORLD_W - SCREEN_W, self.player.x - SCREEN_W / 2)),
             max(0, min(WORLD_H - SCREEN_H, self.player.y - SCREEN_H / 2)),
@@ -466,6 +494,16 @@ class GameApp:
             amount = min(1.0, dt * BGM_VOLUME_CHANGE_SPEED)
             self.current_bgm_volume += (target_volume - self.current_bgm_volume) * amount
             pygame.mixer.music.set_volume(self.current_bgm_volume)
+        if self.overlay == "blending":
+            self.blender_animation_remaining = max(
+                0.0, self.blender_animation_remaining - max(0.0, dt)
+            )
+            if self.blender_animation_remaining <= 0.0:
+                self.overlay = None
+                self.notify(self.blender_complete_message)
+                self.spawn_particles(
+                    (CAFE.centerx, CAFE.bottom + 42), (192, 102, 186), 30
+                )
         if time.time() - self.last_autosave > 10.0:
             self.save()
 
@@ -607,9 +645,19 @@ class GameApp:
             self.save(announce=True)
             return
         elif kind == "craft":
-            ok, message = self.state.make_smoothie()
-            if ok:
-                self.spawn_particles(target["point"], (192, 102, 186), 18)
+            if self.state.current_order is None:
+                self.notify("지금은 주문한 손님이 없어요.", True)
+                return
+            if self.state.prepared_order is not None:
+                self.notify("이미 만든 주문 스무디를 먼저 판매해 주세요.", True)
+                return
+            self.blender_mix = {
+                key: 0 for key, _label, _color in BLENDER_INGREDIENTS
+            }
+            self.blender_message = "재료의 + 버튼을 눌러 주문 수량을 직접 맞추세요."
+            self.blender_message_error = False
+            self.overlay = "blender"
+            return
         elif kind == "sell_raw":
             ok, message = self.state.sell_blueberry()
             if ok:
@@ -642,6 +690,24 @@ class GameApp:
         if ok:
             self.save()
 
+    def change_blender_ingredient(self, key: str, amount: int) -> None:
+        if key not in self.blender_mix:
+            return
+        self.blender_mix[key] = max(0, min(9, self.blender_mix[key] + amount))
+        self.blender_message = "주문표와 넣은 수량을 비교한 뒤 완성 버튼을 누르세요."
+        self.blender_message_error = False
+
+    def finish_blender_mix(self) -> None:
+        ok, message = self.state.make_smoothie(self.blender_mix)
+        if not ok:
+            self.blender_message = message
+            self.blender_message_error = True
+            return
+        self.blender_animation_remaining = BLENDER_DURATION
+        self.blender_complete_message = message
+        self.overlay = "blending"
+        self.save()
+
     def close_help(self) -> None:
         self.overlay = None
         if not self.state.tutorial_seen:
@@ -659,6 +725,8 @@ class GameApp:
 
     def handle_key(self, event: pygame.event.Event) -> None:
         if event.key == pygame.K_ESCAPE:
+            if self.overlay == "blending":
+                return
             if self.overlay:
                 if self.overlay == "help":
                     self.close_help()
@@ -683,6 +751,25 @@ class GameApp:
         if event.key == pygame.K_s and (event.mod & (pygame.KMOD_CTRL | pygame.KMOD_META)):
             self.save(announce=True)
             return
+        if self.overlay == "blender":
+            shortcuts = {
+                pygame.K_1: "blueberries",
+                pygame.K_2: "honey",
+                pygame.K_3: "milk",
+                pygame.K_4: "ice",
+            }
+            if event.key in shortcuts:
+                amount = -1 if event.mod & pygame.KMOD_SHIFT else 1
+                self.change_blender_ingredient(shortcuts[event.key], amount)
+            elif event.key == pygame.K_r:
+                self.blender_mix = {
+                    key: 0 for key, _label, _color in BLENDER_INGREDIENTS
+                }
+                self.blender_message = "재료를 모두 비웠어요. 다시 직접 넣어 보세요."
+                self.blender_message_error = False
+            elif event.key == pygame.K_RETURN:
+                self.finish_blender_mix()
+            return
         if self.overlay == "shop":
             shortcuts = {pygame.K_1: "seeds", pygame.K_2: "honey", pygame.K_3: "milk", pygame.K_4: "ice"}
             if event.key in shortcuts:
@@ -697,6 +784,30 @@ class GameApp:
         if self.overlay == "help":
             if pygame.Rect(510, 616, 260, 55).collidepoint(position):
                 self.close_help()
+            return
+        if self.overlay == "blender":
+            if pygame.Rect(440, 550, 300, 56).collidepoint(position):
+                self.finish_blender_mix()
+                return
+            if pygame.Rect(760, 550, 120, 56).collidepoint(position):
+                self.blender_mix = {
+                    key: 0 for key, _label, _color in BLENDER_INGREDIENTS
+                }
+                self.blender_message = "재료를 모두 비웠어요. 다시 직접 넣어 보세요."
+                self.blender_message_error = False
+                return
+            if pygame.Rect(900, 550, 110, 56).collidepoint(position):
+                self.overlay = None
+                return
+            for rect, key, _label, _color in self.blender_cards:
+                minus = pygame.Rect(rect.x + 178, rect.y + 57, 40, 40)
+                plus = pygame.Rect(rect.x + 268, rect.y + 57, 40, 40)
+                if minus.collidepoint(position):
+                    self.change_blender_ingredient(key, -1)
+                    return
+                if plus.collidepoint(position):
+                    self.change_blender_ingredient(key, 1)
+                    return
             return
         if self.overlay == "shop":
             if pygame.Rect(510, 520, 260, 52).collidepoint(position):
@@ -1212,6 +1323,8 @@ class GameApp:
             return "익은 블루베리 나무 가까이 가서 E로 수확하세요."
         if state.blueberries < 3 and state.smoothies_sold == 0:
             return "밭을 돌보거나 남쪽 시장에서 생과를 팔아 보세요."
+        if state.active_plots < MAX_PLOTS and state.money >= state.land_cost:
+            return f"확장 간판에서 다음 텃밭을 {state.land_cost:,}코인에 살 수 있어요."
         order = state.current_order
         if order is None:
             return "새 손님과 주문을 기다리고 있어요."
@@ -1221,12 +1334,9 @@ class GameApp:
                 f"얼음 {order.ice} → {order.price}코인"
             )
         return f"완성된 주문 스무디를 카트에서 팔면 {order.price}코인을 받아요."
-        if state.active_plots == 4:
-            return "밭 오른쪽의 확장 간판에서 농장 땅을 늘려 보세요."
-        return "농장을 키워 스무디를 더 많이 판매하세요!"
 
     def game_clock(self) -> tuple[int, int, int, float]:
-        elapsed = max(0.0, time.time() - self.state.started_at)
+        elapsed = max(0.0, self.state.game_elapsed_seconds)
         day = int(elapsed // DAY_SECONDS) + 1
         phase = (elapsed % DAY_SECONDS) / DAY_SECONDS
         total_minutes = 6 * 60 + int(phase * 16 * 60)
@@ -1343,6 +1453,173 @@ class GameApp:
         pygame.draw.rect(self.screen, BLUEBERRY, close)
         self.text("가게 나가기  E", 18, WHITE, close.centerx, close.centery, center=True)
 
+    def draw_blender_overlay(self) -> None:
+        shade = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
+        shade.fill((31, 26, 39, 178))
+        self.screen.blit(shade, (0, 0))
+        card = pygame.Rect(200, 45, 880, 620)
+        pygame.draw.rect(self.screen, (30, 28, 34), card.move(11, 11))
+        pygame.draw.rect(self.screen, WOOD_DARK, card.inflate(14, 14))
+        pygame.draw.rect(self.screen, (130, 91, 151), card)
+        pygame.draw.rect(self.screen, CREAM, card.inflate(-18, -18))
+        self.text("내 손으로 만드는 주문 스무디", 32, BLUEBERRY_DARK,
+                  card.centerx, 84, center=True)
+        self.text("+ / - 버튼으로 직접 담기 · 숫자키 1~4로 추가 · Shift+숫자키로 빼기",
+                  14, MUTED, card.centerx, 119, center=True)
+
+        order = self.state.current_order
+        ticket = pygame.Rect(280, 143, 730, 82)
+        rounded_rect(self.screen, ticket, (255, 247, 211), 12, WOOD_DARK, 3)
+        if order is not None:
+            self.text("맨 앞 손님의 주문표", 15, BLUEBERRY_DARK,
+                      ticket.centerx, ticket.y + 18, center=True)
+            self.text(
+                f"블루베리 3   꿀 {order.honey}   우유 {order.milk}   얼음 {order.ice}",
+                20,
+                INK,
+                ticket.centerx,
+                ticket.y + 46,
+                center=True,
+            )
+            self.text(f"완성 판매가  {order.price}코인", 14, RED,
+                      ticket.centerx, ticket.y + 69, center=True)
+        else:
+            self.text("현재 기다리는 주문이 없어요.", 18, MUTED,
+                      ticket.centerx, ticket.centery, center=True)
+
+        for index, (rect, key, label, color) in enumerate(self.blender_cards, start=1):
+            rounded_rect(self.screen, rect, (249, 232, 186), 12, WOOD_DARK, 3)
+            pygame.draw.rect(self.screen, color, (rect.x + 16, rect.y + 17, 18, 18))
+            self.text(f"[{index}] {label}", 20, INK, rect.x + 44, rect.y + 12)
+            ordered = getattr(order, key) if order is not None else 0
+            self.text(f"주문 {ordered} · 보유 {self.state.inventory(key)}", 14, MUTED,
+                      rect.x + 18, rect.y + 55)
+
+            minus = pygame.Rect(rect.x + 178, rect.y + 57, 40, 40)
+            plus = pygame.Rect(rect.x + 268, rect.y + 57, 40, 40)
+            rounded_rect(self.screen, minus, (202, 174, 157), 8, WOOD_DARK, 2)
+            rounded_rect(self.screen, plus, color, 8, WOOD_DARK, 2)
+            self.text("-", 25, INK, minus.centerx, minus.centery - 1, center=True)
+            self.text(str(self.blender_mix[key]), 25, BLUEBERRY_DARK,
+                      rect.x + 243, rect.y + 77, center=True)
+            self.text("+", 25, WHITE, plus.centerx, plus.centery - 1, center=True)
+
+        message_box = pygame.Rect(280, 515, 730, 27)
+        message_color = (154, 67, 67) if self.blender_message_error else GREEN_DARK
+        self.text(self.blender_message, 14, message_color,
+                  message_box.centerx, message_box.centery, center=True)
+
+        finish = pygame.Rect(440, 550, 300, 56)
+        reset = pygame.Rect(760, 550, 120, 56)
+        close = pygame.Rect(900, 550, 110, 56)
+        rounded_rect(self.screen, finish, BLUEBERRY, 10, WOOD_DARK, 4)
+        rounded_rect(self.screen, reset, (210, 168, 92), 10, WOOD_DARK, 3)
+        rounded_rect(self.screen, close, (177, 151, 136), 10, WOOD_DARK, 3)
+        self.text("스무디 완성  Enter", 18, WHITE,
+                  finish.centerx, finish.centery, center=True)
+        self.text("전부 비우기", 15, INK, reset.centerx, reset.centery, center=True)
+        self.text("나가기", 15, INK, close.centerx, close.centery, center=True)
+
+    def draw_blending_overlay(self) -> None:
+        shade = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
+        shade.fill((31, 26, 39, 190))
+        self.screen.blit(shade, (0, 0))
+        card = pygame.Rect(300, 48, 680, 624)
+        pygame.draw.rect(self.screen, (27, 25, 31), card.move(12, 12))
+        pygame.draw.rect(self.screen, WOOD_DARK, card.inflate(14, 14))
+        pygame.draw.rect(self.screen, (127, 87, 151), card)
+        pygame.draw.rect(self.screen, CREAM, card.inflate(-18, -18))
+
+        elapsed = BLENDER_DURATION - self.blender_animation_remaining
+        progress = min(1.0, max(0.0, elapsed / BLENDER_DURATION))
+        shake = round(math.sin(elapsed * 38.0) * 4)
+        center_x = card.centerx + shake
+        self.text("위이이잉! 스무디를 갈고 있어요", 32, BLUEBERRY_DARK,
+                  card.centerx, 91, center=True)
+        self.text("재료가 부드러워질 때까지 3초만 기다려 주세요.", 16, MUTED,
+                  card.centerx, 128, center=True)
+
+        jar = [
+            (center_x - 118, 188),
+            (center_x + 118, 188),
+            (center_x + 92, 470),
+            (center_x - 92, 470),
+        ]
+        pygame.draw.polygon(self.screen, (103, 81, 111), jar)
+        inner = [
+            (center_x - 108, 201),
+            (center_x + 108, 201),
+            (center_x + 82, 458),
+            (center_x - 82, 458),
+        ]
+        pygame.draw.polygon(self.screen, (224, 213, 229), inner)
+        liquid_top = 267 - round(progress * 26)
+        liquid = [
+            (center_x - 101, liquid_top),
+            (center_x - 45, liquid_top - round(math.sin(elapsed * 16) * 8)),
+            (center_x + 18, liquid_top + round(math.sin(elapsed * 16) * 7)),
+            (center_x + 101, liquid_top - round(math.sin(elapsed * 16) * 5)),
+            (center_x + 82, 458),
+            (center_x - 82, 458),
+        ]
+        pygame.draw.polygon(self.screen, (171, 82, 177), liquid)
+        pygame.draw.polygon(self.screen, (201, 123, 195), liquid, 5)
+
+        ingredient_colors = {
+            "blueberries": BLUEBERRY,
+            "honey": GOLD,
+            "milk": WHITE,
+            "ice": WATER_LIGHT,
+        }
+        bubbles: list[tuple[str, int]] = []
+        for key, count in self.blender_mix.items():
+            bubbles.extend((key, index) for index in range(count))
+        for index, (key, _count) in enumerate(bubbles):
+            angle = elapsed * (4.2 + index % 3) + index * 1.7
+            radius_x = 28 + (index * 17) % 63
+            radius_y = 42 + (index * 11) % 78
+            bubble_x = center_x + round(math.cos(angle) * radius_x)
+            bubble_y = 350 + round(math.sin(angle * 1.15) * radius_y)
+            radius = 7 if key == "blueberries" else 9
+            pygame.draw.circle(self.screen, WOOD_DARK, (bubble_x, bubble_y), radius + 2)
+            pygame.draw.circle(
+                self.screen, ingredient_colors[key], (bubble_x, bubble_y), radius
+            )
+
+        blade_center = (center_x, 426)
+        blade_angle = elapsed * 18.0
+        for offset in (0.0, math.pi / 2):
+            dx = round(math.cos(blade_angle + offset) * 47)
+            dy = round(math.sin(blade_angle + offset) * 19)
+            pygame.draw.line(
+                self.screen,
+                (84, 74, 91),
+                (blade_center[0] - dx, blade_center[1] - dy),
+                (blade_center[0] + dx, blade_center[1] + dy),
+                7,
+            )
+        pygame.draw.circle(self.screen, GOLD, blade_center, 10)
+
+        pygame.draw.rect(self.screen, WOOD_DARK, (center_x - 132, 168, 264, 31))
+        pygame.draw.rect(self.screen, (105, 75, 123), (center_x - 124, 172, 248, 20))
+        pygame.draw.rect(self.screen, WOOD_DARK, (center_x - 106, 465, 212, 78))
+        pygame.draw.rect(self.screen, (112, 79, 157), (center_x - 96, 471, 192, 60))
+        pygame.draw.circle(self.screen, (242, 185, 87), (center_x, 501), 13)
+
+        bar = pygame.Rect(390, 582, 500, 31)
+        rounded_rect(self.screen, bar, (196, 176, 157), 10, WOOD_DARK, 3)
+        fill_width = round((bar.width - 8) * progress)
+        if fill_width > 0:
+            pygame.draw.rect(
+                self.screen,
+                (127, 82, 168),
+                (bar.x + 4, bar.y + 4, fill_width, bar.height - 8),
+                border_radius=7,
+            )
+        seconds_left = max(0.0, self.blender_animation_remaining)
+        self.text(f"완성까지 {seconds_left:.1f}초", 16, INK,
+                  bar.centerx, 638, center=True)
+
     def draw_help_overlay(self) -> None:
         shade = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
         shade.fill((31, 26, 39, 175))
@@ -1360,7 +1637,7 @@ class GameApp:
             ("밭", "나무 가까이에서 E", "빈 밭에는 씨앗을 심고 익은 나무는 직접 수확해요."),
             ("재료 상점", "동쪽 초록 지붕", "꿀·우유·얼음과 씨앗을 구매해요."),
             ("주문", "맨 앞 손님의 말풍선", "꿀·우유·얼음 수량과 받을 돈을 먼저 확인해요."),
-            ("제조·판매", "블렌더와 남쪽 카트", "주문 수량대로 만든 뒤 손님에게 직접 판매해요."),
+            ("제조·판매", "블렌더 앞 E → +/-", "재료를 직접 주문 수량대로 담고 완성한 뒤 판매해요."),
         ]
         y = 183
         for title, control, body in rows:
@@ -1393,6 +1670,10 @@ class GameApp:
         self.draw_toast()
         if self.overlay == "shop":
             self.draw_shop_overlay()
+        elif self.overlay == "blender":
+            self.draw_blender_overlay()
+        elif self.overlay == "blending":
+            self.draw_blending_overlay()
         elif self.overlay == "help":
             self.draw_help_overlay()
         pygame.display.flip()

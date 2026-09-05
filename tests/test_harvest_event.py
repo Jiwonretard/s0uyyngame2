@@ -63,6 +63,17 @@ class HarvestEventTests(unittest.TestCase):
                 for frame in frames)
         )
 
+    def test_user_ingredient_icons_are_extracted_with_transparent_backgrounds(self):
+        expected = {"milk", "blueberries", "ice", "honey"}
+        self.assertEqual(self.app.ingredient_icon_error, "")
+        self.assertEqual(set(self.app.ingredient_icons), expected)
+        self.assertEqual(set(self.app.ingredient_icons_small), expected)
+        for icon in self.app.ingredient_icons.values():
+            self.assertTrue(icon.get_flags() & pygame.SRCALPHA)
+            self.assertEqual(icon.get_at((0, 0)).a, 0)
+            self.assertGreater(pygame.mask.from_surface(icon).count(), 100)
+        self.assertGreater(self.app.ingredient_icons["milk"].get_at((29, 29)).a, 0)
+
     def test_world_draw_does_not_resize_transparent_surfaces(self):
         with patch("pygame.transform.scale", side_effect=AssertionError("unexpected resize")):
             self.app.draw()

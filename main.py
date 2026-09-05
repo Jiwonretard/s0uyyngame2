@@ -40,6 +40,12 @@ SAVE_PATH = BASE_DIR / "save_game.json"
 SALE_SOUND_PATH = BASE_DIR / "assets" / "smoothie_sale.wav"
 BGM_PATH = BASE_DIR / "assets" / "blueberry_morning.ogg"
 PLAYER_SHEET_PATH = BASE_DIR / "assets" / "player_reference_sheet.png"
+INGREDIENT_SOURCE_PATHS = {
+    "milk": BASE_DIR / "assets" / "ingredient_milk_source.png",
+    "blueberries": BASE_DIR / "assets" / "ingredient_blueberry_source.png",
+    "ice": BASE_DIR / "assets" / "ingredient_ice_source.png",
+    "honey": BASE_DIR / "assets" / "ingredient_honey_source.png",
+}
 BGM_NORMAL_VOLUME = 0.28
 BGM_DUCK_VOLUME = 0.055
 BGM_VOLUME_CHANGE_SPEED = 2.8
@@ -254,6 +260,10 @@ class GameApp:
         self.blender_animation_remaining = 0.0
         self.blender_complete_message = ""
         self.blender_cards = self._make_blender_cards()
+        self.ingredient_icons: dict[str, pygame.Surface] = {}
+        self.ingredient_icons_small: dict[str, pygame.Surface] = {}
+        self.ingredient_icon_error = ""
+        self._load_ingredient_icons()
         self._load_audio()
         self.player_frames: dict[str, list[pygame.Surface]] = {}
         self.player_sprite_error = ""
@@ -307,6 +317,82 @@ class GameApp:
             pygame.mixer.music.play(-1, fade_ms=1400)
         except (pygame.error, FileNotFoundError) as exc:
             self.music_error = str(exc)
+
+    @staticmethod
+    def _scale_icon_to_cell(icon: pygame.Surface, cell_size: int) -> pygame.Surface:
+        scale = min((cell_size - 4) / icon.get_width(), (cell_size - 4) / icon.get_height())
+        width = max(1, round(icon.get_width() * scale))
+        height = max(1, round(icon.get_height() * scale))
+        scaled = pygame.transform.scale(icon, (width, height))
+        cell = pygame.Surface((cell_size, cell_size), pygame.SRCALPHA)
+        cell.blit(scaled, scaled.get_rect(center=(cell_size // 2, cell_size // 2)))
+        return cell
+
+    @staticmethod
+    def _extract_pixel_icon(source: pygame.Surface, *, keep_enclosed_fill: bool) -> pygame.Surface:
+        source = source.convert_alpha()
+        width, height = source.get_size()
+        background = source.get_at((width // 2, 20))[:3]
+
+        def is_background(pixel: pygame.Color) -> bool:
+            return max(abs(pixel[index] - background[index]) for index in range(3)) <= 7
+
+        points = []
+        for y in range(24, height - 24):
+            for x in range(24, width - 24):
+                if not is_background(source.get_at((x, y))):
+                    points.append((x, y))
+        if not points:
+            raise ValueError("ingredient icon pixels not found")
+        left = min(point[0] for point in points)
+        right = max(point[0] for point in points)
+        top = min(point[1] for point in points)
+        bottom = max(point[1] for point in points)
+        crop_rect = pygame.Rect(left, top, right - left + 1, bottom - top + 1)
+        crop_rect = crop_rect.inflate(12, 12).clip(source.get_rect())
+        icon = source.subsurface(crop_rect).copy().convert_alpha()
+
+        if keep_enclosed_fill:
+            icon_width, icon_height = icon.get_size()
+            visited: set[tuple[int, int]] = set()
+            stack = [
+                *((x, 0) for x in range(icon_width)),
+                *((x, icon_height - 1) for x in range(icon_width)),
+                *((0, y) for y in range(icon_height)),
+                *((icon_width - 1, y) for y in range(icon_height)),
+            ]
+            while stack:
+                x, y = stack.pop()
+                if (x, y) in visited or not (0 <= x < icon_width and 0 <= y < icon_height):
+                    continue
+                if not is_background(icon.get_at((x, y))):
+                    continue
+                visited.add((x, y))
+                stack.extend(((x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)))
+            for x, y in visited:
+                color = icon.get_at((x, y))
+                icon.set_at((x, y), (*color[:3], 0))
+        else:
+            for y in range(icon.get_height()):
+                for x in range(icon.get_width()):
+                    color = icon.get_at((x, y))
+                    if is_background(color):
+                        icon.set_at((x, y), (*color[:3], 0))
+        return icon
+
+    def _load_ingredient_icons(self) -> None:
+        try:
+            for key, path in INGREDIENT_SOURCE_PATHS.items():
+                source = pygame.image.load(str(path))
+                icon = self._extract_pixel_icon(
+                    source, keep_enclosed_fill=(key == "milk")
+                )
+                self.ingredient_icons[key] = self._scale_icon_to_cell(icon, 58)
+                self.ingredient_icons_small[key] = self._scale_icon_to_cell(icon, 34)
+        except (pygame.error, FileNotFoundError, ValueError) as exc:
+            self.ingredient_icons.clear()
+            self.ingredient_icons_small.clear()
+            self.ingredient_icon_error = str(exc)
 
     def _load_player_frames(self) -> None:
         """Extract the 12 generated sprites by their connected alpha regions."""
@@ -1445,9 +1531,15 @@ class GameApp:
             pygame.draw.rect(self.screen, WOOD_DARK, rect.inflate(6, 6))
             pygame.draw.rect(self.screen, fill, rect)
             pygame.draw.rect(self.screen, tuple(min(255, channel + 18) for channel in fill), rect.inflate(-8, -8), 3)
-            self.text(f"[{index}] {label} 1개", 18, WHITE, rect.centerx, rect.y + 24, center=True)
+            icon = self.ingredient_icons.get(key)
+            text_center_x = rect.centerx
+            if icon is not None:
+                self.screen.blit(icon, icon.get_rect(center=(rect.x + 39, rect.centery)))
+                text_center_x += 25
+            self.text(f"[{index}] {label} 1개", 18, WHITE,
+                      text_center_x, rect.y + 24, center=True)
             self.text(f"{ITEM_COSTS[key]}코인 · 보유 {amounts[key]}", 14, WHITE,
-                      rect.centerx, rect.y + 53, center=True)
+                      text_center_x, rect.y + 53, center=True)
         close = pygame.Rect(510, 520, 260, 52)
         pygame.draw.rect(self.screen, WOOD_DARK, close.inflate(6, 6))
         pygame.draw.rect(self.screen, BLUEBERRY, close)
@@ -1489,8 +1581,12 @@ class GameApp:
 
         for index, (rect, key, label, color) in enumerate(self.blender_cards, start=1):
             rounded_rect(self.screen, rect, (249, 232, 186), 12, WOOD_DARK, 3)
-            pygame.draw.rect(self.screen, color, (rect.x + 16, rect.y + 17, 18, 18))
-            self.text(f"[{index}] {label}", 20, INK, rect.x + 44, rect.y + 12)
+            icon = self.ingredient_icons.get(key)
+            if icon is not None:
+                self.screen.blit(icon, icon.get_rect(center=(rect.x + 40, rect.y + 31)))
+            else:
+                pygame.draw.rect(self.screen, color, (rect.x + 16, rect.y + 17, 18, 18))
+            self.text(f"[{index}] {label}", 20, INK, rect.x + 72, rect.y + 12)
             ordered = getattr(order, key) if order is not None else 0
             self.text(f"주문 {ordered} · 보유 {self.state.inventory(key)}", 14, MUTED,
                       rect.x + 18, rect.y + 55)
@@ -1580,11 +1676,15 @@ class GameApp:
             radius_y = 42 + (index * 11) % 78
             bubble_x = center_x + round(math.cos(angle) * radius_x)
             bubble_y = 350 + round(math.sin(angle * 1.15) * radius_y)
-            radius = 7 if key == "blueberries" else 9
-            pygame.draw.circle(self.screen, WOOD_DARK, (bubble_x, bubble_y), radius + 2)
-            pygame.draw.circle(
-                self.screen, ingredient_colors[key], (bubble_x, bubble_y), radius
-            )
+            icon = self.ingredient_icons_small.get(key)
+            if icon is not None:
+                self.screen.blit(icon, icon.get_rect(center=(bubble_x, bubble_y)))
+            else:
+                radius = 7 if key == "blueberries" else 9
+                pygame.draw.circle(self.screen, WOOD_DARK, (bubble_x, bubble_y), radius + 2)
+                pygame.draw.circle(
+                    self.screen, ingredient_colors[key], (bubble_x, bubble_y), radius
+                )
 
         blade_center = (center_x, 426)
         blade_angle = elapsed * 18.0

@@ -23,13 +23,17 @@ from game_state import (
     BAG_STACK_SIZE,
     CUSTOMER_QUEUE_SIZE,
     CustomerOrder,
-    GROW_SECONDS,
-    HARVEST_YIELD,
+    DAYS_PER_SEASON,
+    FACILITY_CONFIG,
+    FACILITY_KEYS,
+    GAME_DAY_SECONDS,
     ITEM_COSTS,
+    MAX_FACILITY_LEVEL,
     MAX_PLOTS,
-    RAW_BERRY_PRICE,
-    REGROW_SECONDS,
+    WEATHER_LABELS,
     GameState,
+    is_blueberry_festival,
+    season_for_day,
 )
 
 
@@ -37,7 +41,7 @@ SCREEN_W, SCREEN_H = 1280, 720
 WORLD_W, WORLD_H = 2200, 1500
 FPS = 60
 PLAYER_SPEED = 235.0
-DAY_SECONDS = 720.0
+DAY_SECONDS = GAME_DAY_SECONDS
 CUSTOMER_RETURN_SECONDS = 14.0
 BLENDER_DURATION = 3.0
 BASE_DIR = Path(__file__).resolve().parent
@@ -85,6 +89,14 @@ CAFE = pygame.Rect(1540, 700, 440, 300)
 MARKET = pygame.Rect(1010, 990, 360, 190)
 SMOOTHIE_CART = pygame.Rect(1530, 1120, 430, 170)
 POND = pygame.Rect(1040, 245, 390, 270)
+BEEHIVE = pygame.Rect(245, 1000, 135, 105)
+ICE_MAKER = pygame.Rect(455, 1000, 155, 105)
+COW_BARN = pygame.Rect(680, 945, 250, 160)
+FACILITY_RECTS = {
+    "beehive": BEEHIVE,
+    "ice_maker": ICE_MAKER,
+    "cow_barn": COW_BARN,
+}
 
 CUSTOMER_QUEUE_POINTS = [
     (1840, 1322),
@@ -121,7 +133,7 @@ TREE_POSITIONS = [
     (80, 485), (115, 790), (90, 1110), (650, 105), (850, 125),
     (1020, 120), (1450, 560), (2045, 265), (2080, 620),
     (2040, 970), (2050, 1340), (1415, 1320), (890, 1250),
-    (575, 1300), (245, 1320), (720, 1040),
+    (575, 1300), (245, 1320), (700, 1240),
 ]
 
 
@@ -234,7 +246,12 @@ class GameApp:
         self.walk_phase = 0.0
         self.is_moving = False
         self.running = True
-        self.overlay: str | None = None if self.state.tutorial_seen else "help"
+        if not self.state.tutorial_seen:
+            self.overlay: str | None = "help"
+        elif self.state.pending_daily_report is not None:
+            self.overlay = "daily_report"
+        else:
+            self.overlay = None
         self.toast = "이제 캐릭터를 직접 움직여 농장을 운영하세요!"
         if load_errors:
             self.toast = "저장 파일을 읽지 못해 새 농장으로 시작했어요."
@@ -265,6 +282,7 @@ class GameApp:
         self.blender_animation_remaining = 0.0
         self.blender_complete_message = ""
         self.blender_cards = self._make_blender_cards()
+        self.selected_facility = "beehive"
         self.ingredient_icons: dict[str, pygame.Surface] = {}
         self.ingredient_icons_small: dict[str, pygame.Surface] = {}
         self.ingredient_icon_error = ""
@@ -281,7 +299,13 @@ class GameApp:
         for _ in range(150):
             x, y = rng.randint(35, WORLD_W - 35), rng.randint(35, WORLD_H - 35)
             point = (x, y)
-            blocked = any(rect.inflate(60, 60).collidepoint(point) for rect in (HOUSE, SHOP, CAFE, MARKET, SMOOTHIE_CART, POND))
+            blocked = any(
+                rect.inflate(60, 60).collidepoint(point)
+                for rect in (
+                    HOUSE, SHOP, CAFE, MARKET, SMOOTHIE_CART, POND,
+                    BEEHIVE, ICE_MAKER, COW_BARN,
+                )
+            )
             if not blocked and not pygame.Rect(215, 340, 730, 560).collidepoint(point):
                 flowers.append((x, y, rng.choice(colors)))
         return flowers
@@ -495,7 +519,10 @@ class GameApp:
         return pygame.Rect(round(x - 13), round(y - 13), 26, 20)
 
     def _obstacles(self) -> list[pygame.Rect]:
-        obstacles = [HOUSE, SHOP, CAFE, MARKET, SMOOTHIE_CART, POND.inflate(-34, -30)]
+        obstacles = [
+            HOUSE, SHOP, CAFE, MARKET, SMOOTHIE_CART, POND.inflate(-34, -30),
+            BEEHIVE, ICE_MAKER, COW_BARN,
+        ]
         obstacles.extend(pygame.Rect(x - 14, y - 8, 28, 32) for x, y in TREE_POSITIONS)
         return obstacles
 
@@ -535,7 +562,14 @@ class GameApp:
         if self.overlay is None:
             # The farm calendar advances only while the player is actually in
             # the world. Closing the game or opening a menu pauses the clock.
+            self.state.tick_customer_wait(dt)
             self.state.game_elapsed_seconds += max(0.0, dt)
+            new_day = self.state.current_day
+            if new_day > self.state.tracked_day:
+                report = self.state.advance_to_day(new_day)
+                if report is not None:
+                    self.overlay = "daily_report"
+                    self.save()
         target = pygame.Vector2(
             max(0, min(WORLD_W - SCREEN_W, self.player.x - SCREEN_W / 2)),
             max(0, min(WORLD_H - SCREEN_H, self.player.y - SCREEN_H / 2)),
@@ -664,7 +698,7 @@ class GameApp:
                 if not plot.planted:
                     prompt = f"씨앗 심기 (보유 {self.state.seeds})"
                 elif plot.is_ready(now):
-                    prompt = f"블루베리 수확하기 (+{HARVEST_YIELD})"
+                    prompt = f"블루베리 수확하기 (+{self.state.harvest_yield_for_day()})"
                 else:
                     prompt = f"자라는 중 · {int(plot.remaining(now)) + 1}초 남음"
                 candidates.append((gap, {"kind": "plot", "index": index, "prompt": prompt,
@@ -677,7 +711,7 @@ class GameApp:
             else "새 주문을 기다리는 중"
         )
         sell_prompt = (
-            f"주문 스무디 판매 (+{order.price}코인 · 대기 {self.state.customers_waiting}명)"
+            f"주문 스무디 판매 (+{self.state.smoothie_sale_price(order)}코인 · 대기 {self.state.customers_waiting}명)"
             if order is not None
             else "새 손님을 기다리는 중"
         )
@@ -686,7 +720,7 @@ class GameApp:
             ("shop", (SHOP.centerx, SHOP.bottom + 42), 90, "재료 상점 들어가기"),
             ("craft", (CAFE.centerx, CAFE.bottom + 42), 90, craft_prompt),
             ("sell_raw", (MARKET.centerx, MARKET.bottom + 38), 88,
-             f"블루베리 생과 1개 판매 (+{RAW_BERRY_PRICE}코인)"),
+             f"블루베리 생과 1개 판매 (+{self.state.raw_blueberry_price()}코인)"),
             ("sell_smoothie", (SMOOTHIE_CART.centerx, SMOOTHIE_CART.bottom + 38), 92,
              sell_prompt),
             ("land", (980, 650), 86,
@@ -697,6 +731,29 @@ class GameApp:
             gap = distance(position, point)
             if gap <= radius:
                 candidates.append((gap, {"kind": kind, "prompt": prompt, "point": point}))
+        for key, rect in FACILITY_RECTS.items():
+            point = (rect.centerx, rect.bottom + 38)
+            gap = distance(position, point)
+            if gap > 88:
+                continue
+            config = FACILITY_CONFIG[key]
+            level = self.state.facility_level(key)
+            if level <= 0:
+                if self.state.farm_rank < int(config["unlock_rank"]):
+                    prompt = f"{config['name']} 잠김 · 농장 등급 {config['unlock_rank']} 필요"
+                else:
+                    prompt = f"{config['name']} 건설하기 ({self.state.facility_build_cost(key):,}코인)"
+            elif self.state.facility_is_ready(key):
+                prompt = f"{config['product_name']} {self.state.facility_yield(key)}개 준비됨 · 시설 관리"
+            else:
+                ready_day = self.state.facility_ready_days[key]
+                prompt = f"{config['name']} {level}단계 · {ready_day}일차 생산 · 시설 관리"
+            candidates.append((gap, {
+                "kind": "facility",
+                "key": key,
+                "prompt": prompt,
+                "point": point,
+            }))
         return min(candidates, key=lambda item: item[0])[1] if candidates else None
 
     def interact(self) -> None:
@@ -731,6 +788,10 @@ class GameApp:
                 )
         elif kind == "shop":
             self.overlay = "shop"
+            return
+        elif kind == "facility":
+            self.selected_facility = target["key"]
+            self.overlay = "facility"
             return
         elif kind == "save":
             self.save(announce=True)
@@ -781,6 +842,38 @@ class GameApp:
         if ok:
             self.save()
 
+    def use_facility_main_action(self) -> None:
+        key = self.selected_facility
+        if self.state.facility_level(key) <= 0:
+            ok, message = self.state.build_facility(key)
+        else:
+            ok, message = self.state.collect_facility(key)
+        self.notify(message, not ok)
+        if ok:
+            product = str(FACILITY_CONFIG[key]["product"])
+            color = {
+                "honey": GOLD,
+                "ice": WATER_LIGHT,
+                "milk": WHITE,
+            }[product]
+            rect = FACILITY_RECTS[key]
+            self.spawn_particles((rect.centerx, rect.bottom + 10), color, 22)
+            self.save()
+
+    def upgrade_selected_facility(self) -> None:
+        key = self.selected_facility
+        ok, message = self.state.upgrade_facility(key)
+        self.notify(message, not ok)
+        if ok:
+            rect = FACILITY_RECTS[key]
+            self.spawn_particles((rect.centerx, rect.centery), GOLD, 28)
+            self.save()
+
+    def close_daily_report(self) -> None:
+        self.state.clear_daily_report()
+        self.overlay = None
+        self.save()
+
     def change_blender_ingredient(self, key: str, amount: int) -> None:
         if key not in self.blender_mix:
             return
@@ -821,6 +914,8 @@ class GameApp:
             if self.overlay:
                 if self.overlay == "help":
                     self.close_help()
+                elif self.overlay == "daily_report":
+                    self.close_daily_report()
                 else:
                     self.overlay = None
             else:
@@ -856,6 +951,19 @@ class GameApp:
         if self.overlay == "bag":
             if self.is_interaction_key(event):
                 self.overlay = None
+            return
+        if self.overlay == "daily_report":
+            if self.is_interaction_key(event):
+                self.close_daily_report()
+            return
+        if self.overlay == "facility":
+            if self.is_interaction_key(event):
+                self.use_facility_main_action()
+            elif (
+                event.key == pygame.K_u
+                or getattr(event, "scancode", None) == pygame.KSCAN_U
+            ):
+                self.upgrade_selected_facility()
             return
         if self.overlay == "blender":
             shortcuts = {
@@ -923,6 +1031,21 @@ class GameApp:
                 if rect.collidepoint(position):
                     self.buy_item(key)
                     return
+        if self.overlay == "facility":
+            if pygame.Rect(370, 530, 240, 56).collidepoint(position):
+                self.use_facility_main_action()
+                return
+            if pygame.Rect(630, 530, 240, 56).collidepoint(position):
+                self.upgrade_selected_facility()
+                return
+            if pygame.Rect(510, 610, 260, 48).collidepoint(position):
+                self.overlay = None
+                return
+            return
+        if self.overlay == "daily_report":
+            if pygame.Rect(510, 610, 260, 48).collidepoint(position):
+                self.close_daily_report()
+            return
         if self.overlay == "bag":
             if pygame.Rect(510, 614, 260, 48).collidepoint(position):
                 self.overlay = None
@@ -931,7 +1054,14 @@ class GameApp:
             self.overlay = "help"
 
     def draw_ground(self) -> None:
-        self.screen.fill(GRASS)
+        ground_palettes = {
+            "봄": ((119, 177, 83), (124, 182, 85), (154, 202, 98)),
+            "여름": ((104, 169, 70), (111, 177, 76), (145, 195, 86)),
+            "가을": ((150, 164, 72), (158, 171, 77), (191, 190, 91)),
+            "겨울": ((178, 196, 184), (188, 205, 194), (217, 226, 215)),
+        }
+        base_grass, tile_grass, grass_detail = ground_palettes[self.state.season]
+        self.screen.fill(base_grass)
         # A 32 px ground grid is textured in small, hard-edged clusters for a
         # coherent pixel-art look without a transparency-breaking resize pass.
         tile = 32
@@ -942,12 +1072,14 @@ class GameApp:
                 sx, sy = self.world_to_screen((world_x, world_y))
                 value = ((world_x // tile) * 17 + (world_y // tile) * 31) % 11
                 if value in (0, 7):
-                    pygame.draw.rect(self.screen, (124, 182, 85), (sx, sy, tile, tile))
+                    pygame.draw.rect(self.screen, tile_grass, (sx, sy, tile, tile))
                 if value in (2, 9):
-                    pygame.draw.rect(self.screen, GRASS_LIGHT, (sx + 8, sy + 12, 3, 8))
+                    pygame.draw.rect(self.screen, grass_detail, (sx + 8, sy + 12, 3, 8))
                     pygame.draw.rect(self.screen, GRASS_DARK, (sx + 14, sy + 8, 3, 12))
-                    pygame.draw.rect(self.screen, GRASS_LIGHT, (sx + 19, sy + 14, 3, 6))
+                    pygame.draw.rect(self.screen, grass_detail, (sx + 19, sy + 14, 3, 6))
         for x, y, color in self.flowers:
+            if self.state.season == "겨울":
+                continue
             sx, sy = self.world_to_screen((x, y))
             if -8 <= sx <= SCREEN_W + 8 and -8 <= sy <= SCREEN_H + 8:
                 pygame.draw.rect(self.screen, GRASS_DARK, (sx, sy, 2, 7))
@@ -972,6 +1104,7 @@ class GameApp:
             pygame.Rect(1710, 390, 105, 750),
             pygame.Rect(1115, 920, 105, 320),
             pygame.Rect(1180, 920, 585, 90),
+            pygame.Rect(300, 925, 610, 70),
         ]
         for rect in paths:
             self.draw_path(rect)
@@ -1058,7 +1191,8 @@ class GameApp:
                 bx = rect.centerx - 38 + i * 19
                 pygame.draw.rect(self.screen, BLUEBERRY_DARK, (bx - 7, rect.y + 126, 15, 15))
                 pygame.draw.rect(self.screen, BLUEBERRY, (bx - 5, rect.y + 128, 11, 11))
-        self.text(f"한 알 {RAW_BERRY_PRICE}코인", 15, MUTED, rect.centerx, rect.y + 161, center=True)
+        self.text(f"한 알 {self.state.raw_blueberry_price()}코인", 15, MUTED,
+                  rect.centerx, rect.y + 161, center=True)
 
     def draw_smoothie_cart(self) -> None:
         rect = self.rect_to_screen(SMOOTHIE_CART)
@@ -1090,6 +1224,31 @@ class GameApp:
             queue_badge.centery,
             center=True,
         )
+
+    def draw_festival_decorations(self) -> None:
+        if not is_blueberry_festival(self.state.current_day):
+            return
+        left = self.world_to_screen((980, 870))
+        right = self.world_to_screen((1510, 870))
+        pygame.draw.line(self.screen, WOOD_DARK, left, right, 5)
+        festival_colors = (BLUEBERRY, GOLD, (207, 102, 171), WATER_LIGHT)
+        for index, world_x in enumerate(range(1000, 1510, 55)):
+            x, y = self.world_to_screen((world_x, 872))
+            pygame.draw.polygon(
+                self.screen,
+                festival_colors[index % len(festival_colors)],
+                [(x - 19, y), (x + 19, y), (x, y + 31)],
+            )
+        sign_center = self.world_to_screen((1245, 832))
+        sign = pygame.Rect(sign_center[0] - 165, sign_center[1] - 27, 330, 54)
+        rounded_rect(self.screen, sign, CREAM, 12, WOOD_DARK, 4)
+        self.text("블루베리 축제 · 판매 금액 2배!", 18, BLUEBERRY_DARK,
+                  sign.centerx, sign.centery, center=True)
+        for world_x, color in ((990, BLUEBERRY), (1495, GOLD)):
+            x, y = self.world_to_screen((world_x, 815))
+            pygame.draw.line(self.screen, WOOD_DARK, (x, y + 18), (x, y + 72), 3)
+            pygame.draw.circle(self.screen, color, (x, y), 19)
+            pygame.draw.circle(self.screen, WHITE, (x - 6, y - 7), 5)
 
     def draw_customer(
         self,
@@ -1129,13 +1288,22 @@ class GameApp:
         pygame.draw.rect(self.screen, hair, (x - 10, y - 87, 30, 8))
         pygame.draw.rect(self.screen, INK, (x - 11, y - 69, 5, 5))
         pygame.draw.rect(self.screen, (190, 81, 88), (x - 6, y - 59, 8, 3))
-
-        if front and order is not None and not departing:
-            bubble = pygame.Rect(x - 139, y - 185, 278, 77)
-            rounded_rect(self.screen, bubble, (255, 250, 225), 12, WOOD_DARK, 3)
+        if order is not None and order.vip and not departing:
             pygame.draw.polygon(
                 self.screen,
-                (255, 250, 225),
+                GOLD,
+                [(x - 18, y - 91), (x - 13, y - 105), (x - 4, y - 94),
+                 (x + 5, y - 106), (x + 16, y - 92)],
+            )
+            pygame.draw.rect(self.screen, (183, 116, 34), (x - 18, y - 94, 34, 6))
+
+        if front and order is not None and not departing:
+            bubble = pygame.Rect(x - 149, y - 204, 298, 96)
+            bubble_color = (255, 242, 183) if order.vip else (255, 250, 225)
+            rounded_rect(self.screen, bubble, bubble_color, 12, WOOD_DARK, 3)
+            pygame.draw.polygon(
+                self.screen,
+                bubble_color,
                 [(x - 10, bubble.bottom - 2), (x + 8, bubble.bottom - 2), (x, bubble.bottom + 14)],
             )
             pygame.draw.lines(
@@ -1145,18 +1313,28 @@ class GameApp:
                 [(x - 10, bubble.bottom), (x, bubble.bottom + 14), (x + 8, bubble.bottom)],
                 3,
             )
-            self.text("앞 손님의 주문", 13, BLUEBERRY_DARK, bubble.centerx, bubble.y + 17,
+            customer_title = f"{'VIP · ' if order.vip else ''}{order.customer_name}님의 주문"
+            self.text(customer_title, 13, BLUEBERRY_DARK, bubble.centerx, bubble.y + 17,
                       center=True)
             self.text(
                 f"블루베리 3  꿀 {order.honey}  우유 {order.milk}  얼음 {order.ice}",
                 14,
                 INK,
                 bubble.centerx,
-                bubble.y + 40,
+                bubble.y + 43,
                 center=True,
             )
-            self.text(f"받을 돈  {order.price}코인", 13, RED, bubble.centerx, bubble.y + 61,
+            sale_price = self.state.smoothie_sale_price(order)
+            bonus = " · 축제 2배" if is_blueberry_festival(self.state.current_day) else ""
+            self.text(f"받을 돈  {sale_price}코인{bonus}", 13, RED,
+                      bubble.centerx, bubble.y + 64,
                       center=True)
+            mood_label = "아주 만족" if order.satisfaction >= 85 else (
+                "기다리는 중" if order.satisfaction >= 50 else "많이 기다렸어요"
+            )
+            self.text(f"만족도 {order.satisfaction}% · {mood_label}", 13,
+                      GREEN_DARK if order.satisfaction >= 70 else RED,
+                      bubble.centerx, bubble.y + 83, center=True)
 
     def draw_farm_fence(self) -> None:
         farm = self.rect_to_screen(pygame.Rect(225, 350, 720, 550))
@@ -1249,6 +1427,91 @@ class GameApp:
             else f"새 텃밭 {self.state.land_cost:,}코인"
         )
         self.text(label, 15, INK, sign.centerx, sign.centery, center=True)
+
+    def draw_facility(self, key: str, world_rect: pygame.Rect) -> None:
+        rect = self.rect_to_screen(world_rect)
+        if rect.right < -80 or rect.left > SCREEN_W + 80 or rect.bottom < -100 or rect.top > SCREEN_H + 80:
+            return
+        config = FACILITY_CONFIG[key]
+        level = self.state.facility_level(key)
+        pygame.draw.rect(self.screen, (74, 105, 55), rect.move(7, 8), border_radius=8)
+        pygame.draw.rect(self.screen, WOOD_DARK, rect.inflate(8, 8), border_radius=9)
+        pygame.draw.rect(self.screen, (213, 172, 104), rect, border_radius=7)
+        pygame.draw.rect(self.screen, (236, 201, 137), rect.inflate(-8, -8), border_radius=5)
+
+        if level <= 0:
+            pygame.draw.rect(self.screen, (151, 105, 66), rect.inflate(-22, -24), 3)
+            for offset in range(12, rect.width - 12, 20):
+                pygame.draw.line(
+                    self.screen,
+                    (173, 126, 76),
+                    (rect.x + offset, rect.y + 14),
+                    (rect.x + offset - 10, rect.bottom - 14),
+                    2,
+                )
+            locked = self.state.farm_rank < int(config["unlock_rank"])
+            self.text("잠김" if locked else "건설 부지", 15, RED if locked else INK,
+                      rect.centerx, rect.centery - 8, center=True)
+            self.text(
+                f"등급 {config['unlock_rank']}" if locked else f"{self.state.facility_build_cost(key):,}코인",
+                13,
+                MUTED,
+                rect.centerx,
+                rect.centery + 18,
+                center=True,
+            )
+        elif key == "beehive":
+            hive = pygame.Rect(rect.centerx - 33, rect.y + 23, 66, 55)
+            pygame.draw.rect(self.screen, (113, 70, 39), hive.inflate(6, 6), border_radius=15)
+            for index, width in enumerate((42, 57, 66, 57)):
+                band = pygame.Rect(rect.centerx - width // 2, hive.y + index * 12, width, 15)
+                pygame.draw.rect(self.screen, (235, 177, 49), band, border_radius=7)
+            pygame.draw.circle(self.screen, (72, 50, 34), (rect.centerx, hive.bottom - 7), 7)
+            for bee_index in range(level + 1):
+                angle = time.time() * 2.2 + bee_index * 2.4
+                bx = rect.centerx + round(math.cos(angle) * (38 + bee_index * 5))
+                by = rect.centery - 13 + round(math.sin(angle) * 18)
+                pygame.draw.circle(self.screen, INK, (bx, by), 4)
+                pygame.draw.rect(self.screen, GOLD, (bx - 3, by - 2, 6, 4))
+        elif key == "ice_maker":
+            machine = pygame.Rect(rect.x + 25, rect.y + 17, rect.width - 50, rect.height - 34)
+            pygame.draw.rect(self.screen, (49, 98, 121), machine.inflate(6, 6), border_radius=7)
+            pygame.draw.rect(self.screen, (99, 184, 203), machine, border_radius=5)
+            window = pygame.Rect(machine.x + 13, machine.y + 11, machine.width - 26, 31)
+            pygame.draw.rect(self.screen, (229, 248, 245), window)
+            for index in range(level + 1):
+                cube_x = window.x + 8 + (index % 3) * 23
+                pygame.draw.rect(self.screen, WATER_LIGHT, (cube_x, window.y + 7, 15, 15), 3)
+            pygame.draw.circle(self.screen, GOLD, (machine.centerx, machine.bottom - 12), 5)
+        else:
+            wall = pygame.Rect(rect.x + 16, rect.y + 48, rect.width - 32, rect.height - 61)
+            pygame.draw.rect(self.screen, (165, 76, 61), wall)
+            roof = [(rect.x + 5, rect.y + 53), (rect.centerx, rect.y + 10), (rect.right - 5, rect.y + 53)]
+            pygame.draw.polygon(self.screen, (112, 55, 49), roof)
+            pygame.draw.polygon(self.screen, (205, 101, 75), roof, 5)
+            door = pygame.Rect(rect.centerx - 35, wall.y + 23, 70, wall.height - 23)
+            pygame.draw.rect(self.screen, CREAM, door)
+            pygame.draw.circle(self.screen, WHITE, (door.centerx, door.y + 22), 21)
+            pygame.draw.ellipse(self.screen, (237, 180, 190), (door.centerx - 14, door.y + 20, 28, 18))
+            pygame.draw.circle(self.screen, INK, (door.centerx - 8, door.y + 18), 3)
+            pygame.draw.circle(self.screen, INK, (door.centerx + 8, door.y + 18), 3)
+            for index in range(level):
+                pygame.draw.rect(self.screen, GOLD, (rect.x + 24 + index * 24, rect.bottom - 24, 15, 15))
+
+        label_y = rect.bottom + 19
+        label_width = max(112, self.fonts[14].size(str(config["name"]))[0] + 58)
+        label = pygame.Rect(rect.centerx - label_width // 2, label_y - 15, label_width, 30)
+        rounded_rect(self.screen, label, CREAM, 9, WOOD_DARK, 2)
+        suffix = "부지" if level <= 0 else f"Lv.{level}"
+        self.text(f"{config['name']} {suffix}", 14, INK, label.centerx, label.centery, center=True)
+        if self.state.facility_is_ready(key):
+            pygame.draw.circle(self.screen, WOOD_DARK, (rect.right - 5, rect.top - 5), 17)
+            pygame.draw.circle(self.screen, GOLD, (rect.right - 5, rect.top - 5), 13)
+            self.text("!", 16, INK, rect.right - 5, rect.top - 5, center=True)
+
+    def draw_facilities(self) -> None:
+        for key in FACILITY_KEYS:
+            self.draw_facility(key, FACILITY_RECTS[key])
 
     def draw_tree(self, point: tuple[int, int]) -> None:
         x, y = self.world_to_screen(point)
@@ -1388,11 +1651,13 @@ class GameApp:
         self.draw_farm_fence()
         self.draw_plots()
         self.draw_expansion_sign()
+        self.draw_facilities()
         self.draw_house(HOUSE, "블루베리 농장집", (244, 210, 151), (112, 73, 72))
         self.draw_house(SHOP, "꿀 · 우유 · 얼음 상점", (240, 223, 174), (64, 124, 101))
         self.draw_house(CAFE, "블루베리 블렌더", (229, 205, 238), (112, 79, 157))
         self.draw_market()
         self.draw_smoothie_cart()
+        self.draw_festival_decorations()
         customers: list[
             tuple[tuple[float, float], int, bool, CustomerOrder | None, bool]
         ] = [
@@ -1433,6 +1698,10 @@ class GameApp:
 
     def current_objective(self) -> str:
         state = self.state
+        for key in FACILITY_KEYS:
+            if state.facility_is_ready(key):
+                config = FACILITY_CONFIG[key]
+                return f"{config['name']}에 {config['product_name']}이 준비됐어요. 가까이 가서 E를 누르세요."
         if state.berries_harvested == 0:
             return "익은 블루베리 나무 가까이 가서 E로 수확하세요."
         if state.blueberries < 3 and state.smoothies_sold == 0:
@@ -1445,9 +1714,9 @@ class GameApp:
         if state.smoothies < 1:
             return (
                 f"앞 주문: 블루베리 3 · 꿀 {order.honey} · 우유 {order.milk} · "
-                f"얼음 {order.ice} → {order.price}코인"
+                f"얼음 {order.ice} → {state.smoothie_sale_price(order)}코인"
             )
-        return f"완성된 주문 스무디를 카트에서 팔면 {order.price}코인을 받아요."
+        return f"완성된 주문 스무디를 카트에서 팔면 {state.smoothie_sale_price(order)}코인을 받아요."
 
     def game_clock(self) -> tuple[int, int, int, float]:
         elapsed = max(0.0, self.state.game_elapsed_seconds)
@@ -1469,6 +1738,32 @@ class GameApp:
         overlay = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
         overlay.fill(color)
         self.screen.blit(overlay, (0, 0))
+
+    def draw_weather_effects(self) -> None:
+        weather = self.state.weather
+        tick = int(time.time() * 100)
+        if weather == "rain":
+            veil = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
+            veil.fill((62, 90, 126, 22))
+            self.screen.blit(veil, (0, 0))
+            for index in range(72):
+                x = (index * 83 + tick * 3) % (SCREEN_W + 80) - 40
+                y = (index * 47 + tick * 7) % (SCREEN_H + 50) - 25
+                pygame.draw.line(self.screen, (173, 210, 231), (x, y), (x - 10, y + 24), 2)
+        elif weather == "snow":
+            for index in range(58):
+                x = (index * 97 + tick) % (SCREEN_W + 30) - 15
+                y = (index * 61 + tick * (1 + index % 3)) % (SCREEN_H + 30) - 15
+                pygame.draw.circle(self.screen, WHITE, (x, y), 2 + index % 3)
+        elif weather == "wind":
+            for index in range(18):
+                x = (index * 131 + tick * 4) % (SCREEN_W + 80) - 40
+                y = 115 + (index * 79) % 500 + round(math.sin(tick / 15 + index) * 20)
+                pygame.draw.ellipse(self.screen, (190, 154, 65), (x, y, 11, 6))
+        elif weather == "heat":
+            warmth = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
+            warmth.fill((255, 167, 68, 18))
+            self.screen.blit(warmth, (0, 0))
 
     def draw_hud(self) -> None:
         left = pygame.Rect(14, 14, 440, 78)
@@ -1495,8 +1790,13 @@ class GameApp:
         pygame.draw.rect(self.screen, (45, 43, 39), objective.move(5, 6))
         pygame.draw.rect(self.screen, WOOD_DARK, objective.inflate(6, 6))
         pygame.draw.rect(self.screen, (246, 224, 165), objective)
-        self.text("오늘의 농장 일", 14, BLUEBERRY_DARK, 490, 26)
-        self.wrapped_text(self.current_objective(), 15, INK, pygame.Rect(490, 49, 470, 34))
+        goal = self.state.daily_goal()
+        goal_progress = min(self.state.daily_goal_progress(), int(goal["target"]))
+        self.text(
+            f"오늘 목표 · {goal['label']}  {goal_progress}/{goal['target']}",
+            13, BLUEBERRY_DARK, 490, 25,
+        )
+        self.wrapped_text(self.current_objective(), 14, INK, pygame.Rect(490, 49, 470, 34))
 
         right = pygame.Rect(996, 14, 270, 78)
         pygame.draw.rect(self.screen, (45, 43, 39), right.move(5, 6))
@@ -1504,10 +1804,15 @@ class GameApp:
         pygame.draw.rect(self.screen, (224, 184, 111), right)
         pygame.draw.rect(self.screen, (247, 218, 148), right.inflate(-8, -8))
         day, hour, minute, _phase = self.game_clock()
-        self.text(f"{day}일차", 14, MUTED, 1013, 25)
-        self.text(f"{hour:02d}:{minute:02d}", 22, INK, 1013, 45)
-        self.text(f"꿀 {self.state.honey}  우유 {self.state.milk}  얼음 {self.state.ice}", 13, INK, 1090, 61)
-        self.text(f"밭 {self.state.active_plots}/{MAX_PLOTS}", 13, INK, 1090, 39)
+        season, season_day, _year = season_for_day(day)
+        self.text(f"{day}일차", 13, MUTED, 1013, 23)
+        self.text(f"{hour:02d}:{minute:02d}", 22, INK, 1013, 43)
+        self.text(f"{season} {season_day}/{DAYS_PER_SEASON} · {WEATHER_LABELS[self.state.weather]}",
+                  13, INK, 1088, 24)
+        self.text(f"등급 {self.state.farm_rank} · 평판 {self.state.reputation}",
+                  13, BLUEBERRY_DARK, 1088, 46)
+        self.text(f"꿀 {self.state.honey}  우유 {self.state.milk}  얼음 {self.state.ice}",
+                  13, INK, 1013, 69)
         help_rect = pygame.Rect(1170, 20, 88, 34)
         pygame.draw.rect(self.screen, WOOD_DARK, help_rect.inflate(4, 4))
         pygame.draw.rect(self.screen, PURPLE_LIGHT, help_rect)
@@ -1588,21 +1893,24 @@ class GameApp:
                   14, MUTED, card.centerx, 119, center=True)
 
         order = self.state.current_order
-        ticket = pygame.Rect(280, 143, 730, 82)
+        ticket = pygame.Rect(280, 143, 730, 100)
         rounded_rect(self.screen, ticket, (255, 247, 211), 12, WOOD_DARK, 3)
         if order is not None:
-            self.text("맨 앞 손님의 주문표", 15, BLUEBERRY_DARK,
-                      ticket.centerx, ticket.y + 18, center=True)
+            customer_type = "VIP" if order.vip else ("단골" if order.regular else "손님")
+            self.text(f"{order.customer_name} {customer_type}의 주문표 · 만족도 {order.satisfaction}%",
+                      15, BLUEBERRY_DARK, ticket.centerx, ticket.y + 17, center=True)
+            self.text(f"“{order.story}”", 13, MUTED,
+                      ticket.centerx, ticket.y + 38, center=True)
             self.text(
                 f"블루베리 3   꿀 {order.honey}   우유 {order.milk}   얼음 {order.ice}",
                 20,
                 INK,
                 ticket.centerx,
-                ticket.y + 46,
+                ticket.y + 64,
                 center=True,
             )
-            self.text(f"완성 판매가  {order.price}코인", 14, RED,
-                      ticket.centerx, ticket.y + 69, center=True)
+            self.text(f"완성 판매가  {self.state.smoothie_sale_price(order)}코인", 14, RED,
+                      ticket.centerx, ticket.y + 87, center=True)
         else:
             self.text("현재 기다리는 주문이 없어요.", 18, MUTED,
                       ticket.centerx, ticket.centery, center=True)
@@ -1748,6 +2056,177 @@ class GameApp:
         self.text(f"완성까지 {seconds_left:.1f}초", 16, INK,
                   bar.centerx, 638, center=True)
 
+    def draw_facility_overlay(self) -> None:
+        shade = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
+        shade.fill((31, 26, 39, 178))
+        self.screen.blit(shade, (0, 0))
+        card = pygame.Rect(280, 55, 720, 620)
+        pygame.draw.rect(self.screen, (28, 25, 30), card.move(11, 11))
+        pygame.draw.rect(self.screen, WOOD_DARK, card.inflate(14, 14))
+        pygame.draw.rect(self.screen, WOOD, card)
+        pygame.draw.rect(self.screen, CREAM, card.inflate(-18, -18))
+
+        key = self.selected_facility
+        config = FACILITY_CONFIG[key]
+        level = self.state.facility_level(key)
+        required_rank = int(config["unlock_rank"])
+        unlocked = self.state.farm_rank >= required_rank
+        self.text(f"{config['name']} 관리", 32, BLUEBERRY_DARK,
+                  card.centerx, 96, center=True)
+        self.text(
+            f"농장 등급 {self.state.farm_rank} · 평판 {self.state.reputation}",
+            16, MUTED, card.centerx, 132, center=True,
+        )
+
+        product = str(config["product"])
+        icon = self.ingredient_icons.get(product)
+        icon_panel = pygame.Rect(350, 168, 180, 205)
+        rounded_rect(self.screen, icon_panel, (248, 228, 181), 15, WOOD_DARK, 4)
+        if icon is not None:
+            self.screen.blit(icon, icon.get_rect(center=(icon_panel.centerx, icon_panel.y + 70)))
+        self.text(str(config["product_name"]), 25, INK,
+                  icon_panel.centerx, icon_panel.y + 125, center=True)
+        if level > 0:
+            self.text(f"하루 {self.state.facility_yield(key)}개", 17, BLUEBERRY_DARK,
+                      icon_panel.centerx, icon_panel.y + 159, center=True)
+            self.text(f"보유 {self.state.inventory(product)}개", 14, MUTED,
+                      icon_panel.centerx, icon_panel.y + 185, center=True)
+        else:
+            self.text("아직 생산하지 않음", 15, MUTED,
+                      icon_panel.centerx, icon_panel.y + 167, center=True)
+
+        status_panel = pygame.Rect(555, 168, 355, 205)
+        rounded_rect(self.screen, status_panel, (255, 247, 215), 15, WOOD_DARK, 4)
+        self.text("시설 상태", 20, BLUEBERRY_DARK,
+                  status_panel.centerx, status_panel.y + 29, center=True)
+        stars = "★" * level + "☆" * (MAX_FACILITY_LEVEL - level)
+        self.text(stars, 25, GOLD if level else MUTED,
+                  status_panel.centerx, status_panel.y + 68, center=True)
+        if level <= 0:
+            status = (
+                f"건설 가능 · {self.state.facility_build_cost(key):,}코인"
+                if unlocked
+                else f"잠김 · 농장 등급 {required_rank} 필요"
+            )
+            detail = "건설하면 다음 날부터 생산을 시작해요."
+        elif self.state.facility_is_ready(key):
+            status = f"{config['product_name']} {self.state.facility_yield(key)}개 준비 완료!"
+            detail = "받기를 누르면 재료 가방으로 옮겨져요."
+        else:
+            ready_day = self.state.facility_ready_days[key]
+            status = f"생산 중 · {ready_day}일차에 준비"
+            detail = "게임 날짜가 바뀌면 다시 찾아오세요."
+        self.text(status, 17, RED if level <= 0 and not unlocked else INK,
+                  status_panel.centerx, status_panel.y + 116, center=True)
+        self.wrapped_text(detail, 14, MUTED,
+                          pygame.Rect(status_panel.x + 24, status_panel.y + 148,
+                                      status_panel.width - 48, 45), center=True)
+
+        info = pygame.Rect(350, 397, 560, 95)
+        rounded_rect(self.screen, info, PURPLE_LIGHT, 12, WOOD_DARK, 3)
+        if level <= 0:
+            main_text = f"{config['name']} 건설"
+            upgrade_text = "건설 후 업그레이드"
+        else:
+            main_text = f"{config['product_name']} 받기  E"
+            upgrade_cost = self.state.facility_upgrade_cost(key)
+            if upgrade_cost is None:
+                upgrade_text = "최고 단계"
+            else:
+                next_rank = required_rank + level
+                upgrade_text = f"Lv.{level + 1} 업그레이드 · {upgrade_cost:,}코인 · 등급 {next_rank}"
+        self.text(main_text, 18, BLUEBERRY_DARK, info.centerx, info.y + 28, center=True)
+        self.text(upgrade_text, 15, MUTED, info.centerx, info.y + 64, center=True)
+
+        main_button = pygame.Rect(370, 530, 240, 56)
+        upgrade_button = pygame.Rect(630, 530, 240, 56)
+        close = pygame.Rect(510, 610, 260, 48)
+        rounded_rect(self.screen, main_button, GREEN if unlocked else (151, 142, 139),
+                     10, WOOD_DARK, 4)
+        rounded_rect(self.screen, upgrade_button, GOLD if level > 0 else (184, 166, 132),
+                     10, WOOD_DARK, 4)
+        rounded_rect(self.screen, close, BLUEBERRY, 10, WOOD_DARK, 4)
+        self.text("건설하기" if level <= 0 else "생산품 받기", 18, WHITE,
+                  main_button.centerx, main_button.centery, center=True)
+        self.text("업그레이드  U", 18, INK,
+                  upgrade_button.centerx, upgrade_button.centery, center=True)
+        self.text("시설 화면 닫기", 17, WHITE, close.centerx, close.centery, center=True)
+
+    def draw_daily_report_overlay(self) -> None:
+        report = self.state.pending_daily_report
+        if not report:
+            return
+        shade = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
+        shade.fill((28, 24, 38, 188))
+        self.screen.blit(shade, (0, 0))
+        card = pygame.Rect(300, 42, 680, 638)
+        pygame.draw.rect(self.screen, (28, 25, 30), card.move(12, 12))
+        pygame.draw.rect(self.screen, WOOD_DARK, card.inflate(14, 14))
+        pygame.draw.rect(self.screen, (131, 88, 54), card)
+        pygame.draw.rect(self.screen, CREAM, card.inflate(-18, -18))
+
+        finished_day = int(report["day"])
+        self.text(f"{finished_day}일차 농장 정산", 32, BLUEBERRY_DARK,
+                  card.centerx, 84, center=True)
+        self.text("오늘도 농장과 스무디 가게를 잘 운영했어요!", 16, MUTED,
+                  card.centerx, 122, center=True)
+
+        metrics = [
+            ("판매 수입", f"+{int(report['earned']):,}코인", GREEN_DARK),
+            ("사용한 돈", f"-{int(report['spent']):,}코인", RED),
+            ("블루베리 수확", f"{int(report['harvested'])}개", BLUEBERRY_DARK),
+            ("스무디 판매", f"{int(report['smoothies_sold'])}잔", (139, 69, 148)),
+        ]
+        for index, (label, value, color) in enumerate(metrics):
+            column, row = index % 2, index // 2
+            rect = pygame.Rect(365 + column * 285, 158 + row * 94, 255, 72)
+            rounded_rect(self.screen, rect, (255, 247, 215), 11, WOOD_DARK, 3)
+            self.text(label, 14, MUTED, rect.centerx, rect.y + 20, center=True)
+            self.text(value, 22, color, rect.centerx, rect.y + 48, center=True)
+
+        profit = int(report["profit"])
+        self.text(f"오늘의 순이익  {profit:+,}코인", 22,
+                  GREEN_DARK if profit >= 0 else RED, card.centerx, 365, center=True)
+        goal_box = pygame.Rect(365, 398, 550, 86)
+        goal_complete = bool(report["goal_complete"])
+        rounded_rect(
+            self.screen, goal_box,
+            (221, 239, 187) if goal_complete else (239, 219, 187),
+            12, WOOD_DARK, 3,
+        )
+        self.text("일일 목표 달성!" if goal_complete else "일일 목표 미달성",
+                  18, GREEN_DARK if goal_complete else RED,
+                  goal_box.centerx, goal_box.y + 22, center=True)
+        self.text(
+            f"{report['goal_label']}  {report['goal_progress']}/{report['goal_target']}",
+            15, INK, goal_box.centerx, goal_box.y + 48, center=True,
+        )
+        reward_text = (
+            f"보상 +{report['reward']}코인 · 평판 +{report['reputation_reward']}"
+            if goal_complete else "내일 다시 도전해 보세요."
+        )
+        self.text(reward_text, 14, MUTED, goal_box.centerx, goal_box.y + 70, center=True)
+
+        next_day = int(report["next_day"])
+        season, season_day, year = season_for_day(next_day)
+        weather = WEATHER_LABELS[self.state.weather]
+        next_box = pygame.Rect(365, 505, 550, 77)
+        rounded_rect(self.screen, next_box, PURPLE_LIGHT, 12, WOOD_DARK, 3)
+        self.text(f"{year}년차 {season} {season_day}/{DAYS_PER_SEASON}일 · {weather}",
+                  18, BLUEBERRY_DARK, next_box.centerx, next_box.y + 25, center=True)
+        next_note = (
+            "오늘은 블루베리 축제! 스무디 판매 금액이 2배예요."
+            if is_blueberry_festival(next_day)
+            else str(self.state.daily_goal(next_day)["label"])
+        )
+        self.text(next_note, 14, RED if is_blueberry_festival(next_day) else MUTED,
+                  next_box.centerx, next_box.y + 53, center=True)
+
+        close = pygame.Rect(510, 610, 260, 48)
+        rounded_rect(self.screen, close, BLUEBERRY, 10, WOOD_DARK, 4)
+        self.text("새로운 하루 시작  E", 18, WHITE,
+                  close.centerx, close.centery, center=True)
+
     def draw_bag_overlay(self) -> None:
         shade = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
         shade.fill((31, 26, 39, 178))
@@ -1869,19 +2348,20 @@ class GameApp:
                   card.centerx, 145, center=True)
         rows = [
             ("이동·가방", "WASD · B 가방", "마을을 걸어 다니고 4×4 재료 가방을 확인해요."),
-            ("밭", "나무 가까이에서 E", "빈 밭에는 씨앗을 심고 익은 나무는 직접 수확해요."),
-            ("재료 상점", "동쪽 초록 지붕", "꿀·우유·얼음과 씨앗을 구매해요."),
-            ("주문", "맨 앞 손님의 말풍선", "꿀·우유·얼음 수량과 받을 돈을 먼저 확인해요."),
-            ("제조·판매", "블렌더 앞 E → +/-", "재료를 직접 주문 수량대로 담고 완성한 뒤 판매해요."),
+            ("농사", "나무 가까이에서 E", "날씨와 계절에 따라 성장 속도와 수확량이 달라져요."),
+            ("생산 시설", "남쪽 시설 앞 E", "벌통·제빙기·젖소 축사를 짓고 생산품을 받아요."),
+            ("손님·평판", "정확한 주문 판매", "평판 등급을 올리면 시설과 VIP 손님이 해금돼요."),
+            ("제조·판매", "블렌더 앞 E → +/-", "주문 수량대로 담아 3초 동안 갈고 손님에게 판매해요."),
+            ("달력·축제", "7일마다 계절 변경", "하루 목표를 달성하고 여름 마지막 날 축제에 참여해요."),
         ]
-        y = 183
+        y = 176
         for title, control, body in rows:
             pygame.draw.circle(self.screen, BLUEBERRY, (326, y + 25), 20)
             self.text(title[0], 17, WHITE, 326, y + 25, center=True)
             self.text(title, 18, INK, 362, y + 3)
             self.text(control, 15, BLUEBERRY_DARK, 545, y + 5)
             self.wrapped_text(body, 14, MUTED, pygame.Rect(362, y + 31, 570, 35))
-            y += 76
+            y += 64
         note = pygame.Rect(334, 568, 612, 43)
         pygame.draw.rect(self.screen, BLUEBERRY_DARK, note.inflate(4, 4))
         pygame.draw.rect(self.screen, PURPLE_LIGHT, note)
@@ -1898,6 +2378,7 @@ class GameApp:
         # some macOS/SDL combinations. Draw directly to the display surface.
         self.draw_world()
         self.draw_lighting()
+        self.draw_weather_effects()
         self.draw_impact_flash()
         self.draw_action_effects()
         self.draw_hud()
@@ -1909,6 +2390,10 @@ class GameApp:
             self.draw_blender_overlay()
         elif self.overlay == "blending":
             self.draw_blending_overlay()
+        elif self.overlay == "facility":
+            self.draw_facility_overlay()
+        elif self.overlay == "daily_report":
+            self.draw_daily_report_overlay()
         elif self.overlay == "bag":
             self.draw_bag_overlay()
         elif self.overlay == "help":

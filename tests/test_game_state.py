@@ -1,4 +1,5 @@
 import json
+import random
 import tempfile
 from pathlib import Path
 import sys
@@ -12,6 +13,9 @@ from game_state import (  # noqa: E402
     BAG_STACK_SIZE,
     CUSTOMER_QUEUE_SIZE,
     CustomerOrder,
+    DAYS_PER_SEASON,
+    FACILITY_CONFIG,
+    GAME_DAY_SECONDS,
     GROW_SECONDS,
     HARVEST_YIELD,
     LAND_BASE_COST,
@@ -19,6 +23,9 @@ from game_state import (  # noqa: E402
     RAW_BERRY_PRICE,
     REGROW_SECONDS,
     GameState,
+    is_blueberry_festival,
+    season_for_day,
+    weather_for_day,
 )
 
 
@@ -56,10 +63,11 @@ class GameStateTests(unittest.TestCase):
         self.assertEqual(state.smoothies, 1)
         self.assertEqual(state.prepared_order, order)
         self.assertEqual((state.blueberries, state.honey, state.milk, state.ice), (0, 0, 0, 0))
+        expected_sale_price = state.smoothie_sale_price(order)
         ok, _ = state.sell_smoothie()
         self.assertTrue(ok)
         self.assertEqual(state.smoothies, 0)
-        self.assertEqual(state.money, starting_money + order.price)
+        self.assertEqual(state.money, starting_money + expected_sale_price)
         self.assertEqual(state.smoothies_sold, 1)
         self.assertEqual(state.customers_waiting, 0)
         self.assertIsNone(state.current_order)
@@ -168,6 +176,109 @@ class GameStateTests(unittest.TestCase):
         self.assertEqual(state.money, 100)
         self.assertEqual(state.honey, 0)
 
+    def test_daily_report_tracks_profit_goal_reward_and_resets_counters(self):
+        state = GameState.new(now=100.0)
+        state.daily_berries_harvested = 9
+        state.daily_money_earned = 75
+        state.daily_money_spent = 20
+        starting_money = state.money
+
+        report = state.advance_to_day(2)
+
+        self.assertIsNotNone(report)
+        self.assertTrue(report["goal_complete"])
+        self.assertEqual(report["profit"], 55)
+        self.assertEqual(state.money, starting_money + 45)
+        self.assertEqual(state.reputation, 3)
+        self.assertEqual(state.tracked_day, 2)
+        self.assertEqual(state.daily_money_earned, 0)
+        self.assertEqual(state.daily_berries_harvested, 0)
+        self.assertEqual(state.pending_daily_report, report)
+
+    def test_facilities_unlock_produce_and_upgrade_by_reputation_rank(self):
+        state = GameState.new(now=100.0)
+        state.money = 1_000
+        ok, _ = state.build_facility("beehive", day=1)
+        self.assertTrue(ok)
+        self.assertEqual(state.facility_level("beehive"), 1)
+        self.assertEqual(state.facility_ready_days["beehive"], 2)
+        self.assertEqual(state.daily_money_spent, FACILITY_CONFIG["beehive"]["cost"])
+
+        ok, _ = state.collect_facility("beehive", day=1)
+        self.assertFalse(ok)
+        ok, _ = state.collect_facility("beehive", day=2)
+        self.assertTrue(ok)
+        self.assertEqual(state.honey, 2)
+
+        ok, _ = state.upgrade_facility("beehive")
+        self.assertFalse(ok)
+        state.reputation = 8
+        before_money = state.money
+        ok, _ = state.upgrade_facility("beehive")
+        self.assertTrue(ok)
+        self.assertEqual(state.facility_level("beehive"), 2)
+        self.assertEqual(state.facility_yield("beehive"), 3)
+        self.assertLess(state.money, before_money)
+
+        ok, message = state.build_facility("cow_barn", day=2)
+        self.assertFalse(ok)
+        self.assertIn("등급 3", message)
+        state.reputation = 25
+        ok, _ = state.build_facility("cow_barn", day=2)
+        self.assertTrue(ok)
+
+    def test_seasons_weather_harvest_and_festival_prices_change(self):
+        self.assertEqual(season_for_day(1), ("봄", 1, 1))
+        self.assertEqual(season_for_day(1 + DAYS_PER_SEASON)[0], "여름")
+        self.assertEqual(season_for_day(1 + DAYS_PER_SEASON * 2)[0], "가을")
+        self.assertEqual(season_for_day(1 + DAYS_PER_SEASON * 3)[0], "겨울")
+        self.assertEqual(season_for_day(1 + DAYS_PER_SEASON * 4), ("봄", 1, 2))
+        self.assertEqual(weather_for_day(2), "rain")
+
+        state = GameState.new(now=100.0)
+        state.game_elapsed_seconds = GAME_DAY_SECONDS
+        self.assertEqual(state.harvest_yield_for_day(), HARVEST_YIELD + 1)
+        winter_day = 1 + DAYS_PER_SEASON * 3
+        self.assertEqual(state.raw_blueberry_price(winter_day), RAW_BERRY_PRICE + 2)
+
+        festival_day = DAYS_PER_SEASON * 2
+        self.assertTrue(is_blueberry_festival(festival_day))
+        state.game_elapsed_seconds = (festival_day - 1) * GAME_DAY_SECONDS
+        order = state.make_customer_order(random.Random(7))
+        self.assertTrue(order.vip)
+        self.assertEqual(
+            state.smoothie_sale_price(order),
+            (order.price + state.customer_tip(order)) * 2,
+        )
+
+    def test_customer_patience_tips_regulars_and_vip_reputation(self):
+        state = GameState.new(now=100.0)
+        order = CustomerOrder(3, 1, 1, 1, customer_name="민아", vip=True)
+        state.customers_waiting = 1
+        state.customer_orders = [order]
+        fresh_price = state.smoothie_sale_price(order)
+        state.tick_customer_wait(30.0)
+        self.assertLess(order.satisfaction, 100)
+        self.assertLess(state.smoothie_sale_price(order), fresh_price)
+
+        for key, amount in order.recipe.items():
+            setattr(state, key, amount)
+        ok, _ = state.make_smoothie(order.recipe)
+        self.assertTrue(ok)
+        reputation_before = state.reputation
+        ok, _ = state.sell_smoothie()
+        self.assertTrue(ok)
+        self.assertGreater(state.reputation, reputation_before)
+        self.assertEqual(state.customer_visits["민아"], 1)
+        self.assertEqual(state.vip_customers_served, 1)
+
+        state.customer_visits = {name: 1 for name in ("민아", "하늘", "도윤", "수빈", "유진", "지호", "나리", "태오")}
+        state.game_elapsed_seconds = 0
+        state.reputation = 0
+        regular = state.make_customer_order(random.Random(11))
+        self.assertTrue(regular.regular)
+        self.assertIn("또 왔어요", regular.story)
+
     def test_customers_leave_the_queue_one_at_a_time(self):
         state = GameState.new(now=100.0)
         state.smoothies = CUSTOMER_QUEUE_SIZE + 1
@@ -234,6 +345,33 @@ class GameStateTests(unittest.TestCase):
             self.assertTrue(ok)
             self.assertEqual(loaded.smoothies, 2)
             self.assertIsNone(loaded.prepared_order)
+
+    def test_version_two_save_migrates_without_fake_old_daily_reports(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "save.json"
+            state = GameState.new(now=100.0)
+            state.money = 654
+            state.game_elapsed_seconds = GAME_DAY_SECONDS * 8
+            data = state.to_dict()
+            data["save_version"] = 2
+            for key in (
+                "reputation", "vip_customers_served", "customer_visits",
+                "tracked_day", "daily_berries_harvested",
+                "daily_blueberries_sold", "daily_smoothies_sold",
+                "daily_money_earned", "daily_money_spent",
+                "pending_daily_report", "festival_wins",
+                "facility_levels", "facility_ready_days",
+            ):
+                data.pop(key)
+            path.write_text(json.dumps(data), encoding="utf-8")
+
+            loaded = GameState.load(path, now=101.0)
+
+            self.assertEqual(loaded.money, 654)
+            self.assertEqual(loaded.current_day, 9)
+            self.assertEqual(loaded.tracked_day, 9)
+            self.assertIsNone(loaded.pending_daily_report)
+            self.assertTrue(all(level == 0 for level in loaded.facility_levels.values()))
 
     def test_corrupt_save_falls_back_to_new_game(self):
         with tempfile.TemporaryDirectory() as directory:

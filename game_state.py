@@ -14,7 +14,8 @@ import time
 from typing import Callable
 
 
-SAVE_VERSION = 2
+SAVE_VERSION = 3
+GAME_DAY_SECONDS = 720.0
 STARTING_PLOTS = 4
 MAX_PLOTS = 12
 LAND_BASE_COST = 10_000
@@ -28,6 +29,59 @@ BAG_COLUMNS = 4
 BAG_ROWS = 4
 BAG_SLOT_COUNT = BAG_COLUMNS * BAG_ROWS
 BAG_ITEM_KEYS = ("blueberries", "seeds", "honey", "milk", "ice")
+
+DAYS_PER_SEASON = 7
+SEASONS = ("봄", "여름", "가을", "겨울")
+WEATHER_LABELS = {
+    "sunny": "맑음",
+    "rain": "비",
+    "wind": "바람",
+    "heat": "무더위",
+    "snow": "눈",
+}
+REPUTATION_THRESHOLDS = (0, 8, 25, 55, 95)
+MAX_FACILITY_LEVEL = 3
+FACILITY_KEYS = ("beehive", "ice_maker", "cow_barn")
+FACILITY_CONFIG = {
+    "beehive": {
+        "name": "벌통",
+        "product": "honey",
+        "product_name": "꿀",
+        "cost": 120,
+        "unlock_rank": 1,
+        "yields": (0, 2, 3, 5),
+    },
+    "ice_maker": {
+        "name": "제빙기",
+        "product": "ice",
+        "product_name": "얼음",
+        "cost": 260,
+        "unlock_rank": 2,
+        "yields": (0, 4, 7, 10),
+    },
+    "cow_barn": {
+        "name": "젖소 축사",
+        "product": "milk",
+        "product_name": "우유",
+        "cost": 520,
+        "unlock_rank": 3,
+        "yields": (0, 2, 4, 6),
+    },
+}
+
+CUSTOMER_NAMES = ("민아", "하늘", "도윤", "수빈", "유진", "지호", "나리", "태오")
+VIP_NAMES = ("블루베리 연구가", "축제 심사위원", "유명 요리사", "마을 대표")
+CUSTOMER_STORIES = (
+    "농장 산책 뒤 마시는 스무디가 최고예요.",
+    "오늘은 달콤하고 시원하게 부탁해요!",
+    "친구에게 이 가게를 추천받고 왔어요.",
+    "싱싱한 블루베리 향을 기대하고 있어요.",
+)
+VIP_STORIES = (
+    "마을 최고의 스무디를 심사하러 왔습니다.",
+    "완벽한 배합이라면 특별 평판을 드리죠.",
+    "축제에 소개할 한 잔을 만들어 주세요.",
+)
 
 ITEM_COSTS = {
     "seeds": 6,
@@ -61,6 +115,54 @@ ORDER_INGREDIENT_REWARDS = {
 }
 
 
+def season_for_day(day: int) -> tuple[str, int, int]:
+    safe_day = max(1, int(day))
+    season_index = ((safe_day - 1) // DAYS_PER_SEASON) % len(SEASONS)
+    day_in_season = (safe_day - 1) % DAYS_PER_SEASON + 1
+    year = (safe_day - 1) // (DAYS_PER_SEASON * len(SEASONS)) + 1
+    return SEASONS[season_index], day_in_season, year
+
+
+def weather_for_day(day: int) -> str:
+    season, day_in_season, _year = season_for_day(day)
+    patterns = {
+        "봄": ("sunny", "rain", "sunny", "wind", "rain", "sunny", "sunny"),
+        "여름": ("sunny", "heat", "sunny", "rain", "heat", "sunny", "sunny"),
+        "가을": ("wind", "sunny", "rain", "sunny", "wind", "sunny", "rain"),
+        "겨울": ("snow", "sunny", "snow", "wind", "sunny", "snow", "sunny"),
+    }
+    return patterns[season][day_in_season - 1]
+
+
+def is_blueberry_festival(day: int) -> bool:
+    season, day_in_season, _year = season_for_day(day)
+    return season == "여름" and day_in_season == DAYS_PER_SEASON
+
+
+def daily_goal_for_day(day: int) -> dict[str, int | str]:
+    if is_blueberry_festival(day):
+        return {
+            "kind": "smoothies",
+            "label": "축제 스무디 3잔 판매",
+            "target": 3,
+            "reward": 220,
+            "reputation": 8,
+        }
+    goals = (
+        ("harvest", "블루베리 8개 수확", 8, 45, 3),
+        ("smoothies", "주문 스무디 2잔 판매", 2, 80, 4),
+        ("earn", "판매로 60코인 벌기", 60, 55, 3),
+    )
+    kind, label, target, reward, reputation = goals[(max(1, day) - 1) % len(goals)]
+    return {
+        "kind": kind,
+        "label": label,
+        "target": target,
+        "reward": reward,
+        "reputation": reputation,
+    }
+
+
 @dataclass(eq=True)
 class CustomerOrder:
     """One customer's custom smoothie request."""
@@ -69,15 +171,33 @@ class CustomerOrder:
     honey: int = 1
     milk: int = 1
     ice: int = 1
+    customer_name: str = "마을 손님"
+    vip: bool = False
+    regular: bool = False
+    story: str = "싱싱한 스무디를 부탁해요."
+    wait_seconds: float = field(default=0.0, compare=False)
 
     @classmethod
-    def random(cls, rng: random.Random | None = None) -> "CustomerOrder":
+    def random(
+        cls,
+        rng: random.Random | None = None,
+        *,
+        day: int = 1,
+        vip: bool = False,
+    ) -> "CustomerOrder":
         picker = rng if rng is not None else random
+        season, _day_in_season, _year = season_for_day(day)
+        weather = weather_for_day(day)
+        ice_min = 2 if season == "여름" or weather == "heat" else 1
+        honey_min = 1 if season == "겨울" else 0
         return cls(
             blueberries=3,
-            honey=picker.randint(0, 2),
+            honey=picker.randint(honey_min, 2),
             milk=picker.randint(1, 2),
-            ice=picker.randint(1, 3),
+            ice=picker.randint(ice_min, 3),
+            customer_name=picker.choice(VIP_NAMES if vip else CUSTOMER_NAMES),
+            vip=vip,
+            story=picker.choice(VIP_STORIES if vip else CUSTOMER_STORIES),
         )
 
     @classmethod
@@ -87,6 +207,11 @@ class CustomerOrder:
             honey=max(0, min(2, int(data.get("honey", 1)))),
             milk=max(1, min(2, int(data.get("milk", 1)))),
             ice=max(1, min(3, int(data.get("ice", 1)))),
+            customer_name=str(data.get("customer_name", "마을 손님"))[:24],
+            vip=bool(data.get("vip", False)),
+            regular=bool(data.get("regular", False)),
+            story=str(data.get("story", "싱싱한 스무디를 부탁해요."))[:60],
+            wait_seconds=max(0.0, float(data.get("wait_seconds", 0.0))),
         )
 
     @property
@@ -100,13 +225,18 @@ class CustomerOrder:
 
     @property
     def price(self) -> int:
-        return SMOOTHIE_BASE_PRICE + sum(
+        base = SMOOTHIE_BASE_PRICE + sum(
             self.recipe[key] * reward
             for key, reward in ORDER_INGREDIENT_REWARDS.items()
         )
+        return round(base * 1.5) if self.vip else base
 
     def short_text(self) -> str:
         return f"블루베리 {self.blueberries} · 꿀 {self.honey} · 우유 {self.milk} · 얼음 {self.ice}"
+
+    @property
+    def satisfaction(self) -> int:
+        return max(10, min(100, 100 - int(self.wait_seconds * 1.15)))
 
 
 @dataclass
@@ -152,6 +282,23 @@ class GameState:
     player_x: float = 360.0
     player_y: float = 380.0
     tutorial_seen: bool = False
+    reputation: int = 0
+    vip_customers_served: int = 0
+    customer_visits: dict[str, int] = field(default_factory=dict)
+    tracked_day: int = 1
+    daily_berries_harvested: int = 0
+    daily_blueberries_sold: int = 0
+    daily_smoothies_sold: int = 0
+    daily_money_earned: int = 0
+    daily_money_spent: int = 0
+    pending_daily_report: dict | None = None
+    festival_wins: int = 0
+    facility_levels: dict[str, int] = field(
+        default_factory=lambda: {key: 0 for key in FACILITY_KEYS}
+    )
+    facility_ready_days: dict[str, int] = field(
+        default_factory=lambda: {key: 0 for key in FACILITY_KEYS}
+    )
 
     @classmethod
     def new(cls, now: float | None = None) -> "GameState":
@@ -160,7 +307,7 @@ class GameState:
         state = cls(started_at=current)
         state.plots[0] = Plot(planted=True, ready_at=current, cycle_seconds=GROW_SECONDS)
         state.customer_orders = [
-            CustomerOrder.random() for _ in range(CUSTOMER_QUEUE_SIZE)
+            state.make_customer_order() for _ in range(CUSTOMER_QUEUE_SIZE)
         ]
         return state
 
@@ -170,6 +317,161 @@ class GameState:
 
     def inventory(self, key: str) -> int:
         return int(getattr(self, key))
+
+    @property
+    def current_day(self) -> int:
+        return int(max(0.0, self.game_elapsed_seconds) // GAME_DAY_SECONDS) + 1
+
+    @property
+    def farm_rank(self) -> int:
+        rank = 1
+        for index, threshold in enumerate(REPUTATION_THRESHOLDS, start=1):
+            if self.reputation >= threshold:
+                rank = index
+        return min(len(REPUTATION_THRESHOLDS), rank)
+
+    @property
+    def next_rank_target(self) -> int | None:
+        if self.farm_rank >= len(REPUTATION_THRESHOLDS):
+            return None
+        return REPUTATION_THRESHOLDS[self.farm_rank]
+
+    @property
+    def season(self) -> str:
+        return season_for_day(self.current_day)[0]
+
+    @property
+    def weather(self) -> str:
+        return weather_for_day(self.current_day)
+
+    def make_customer_order(
+        self,
+        rng: random.Random | None = None,
+    ) -> CustomerOrder:
+        picker = rng if rng is not None else random
+        vip_chance = 0.0
+        if self.farm_rank >= 2:
+            vip_chance = 0.22 + (self.farm_rank - 2) * 0.07
+        vip = is_blueberry_festival(self.current_day) or picker.random() < vip_chance
+        order = CustomerOrder.random(picker, day=self.current_day, vip=vip)
+        order.regular = self.customer_visits.get(order.customer_name, 0) > 0
+        if order.regular:
+            order.story = "또 왔어요! 지난번처럼 맛있게 만들어 주세요."
+        return order
+
+    def harvest_yield_for_day(self, day: int | None = None) -> int:
+        selected_day = self.current_day if day is None else max(1, int(day))
+        season, _day_in_season, _year = season_for_day(selected_day)
+        amount = HARVEST_YIELD
+        if season == "가을":
+            amount += 1
+        if weather_for_day(selected_day) == "rain":
+            amount += 1
+        return amount
+
+    def crop_seconds_for_day(self, base_seconds: float, day: int | None = None) -> float:
+        selected_day = self.current_day if day is None else max(1, int(day))
+        weather = weather_for_day(selected_day)
+        multiplier = {
+            "rain": 0.72,
+            "wind": 0.88,
+            "sunny": 1.0,
+            "heat": 1.12,
+            "snow": 1.22,
+        }[weather]
+        return max(1.0, base_seconds * multiplier)
+
+    def raw_blueberry_price(self, day: int | None = None) -> int:
+        selected_day = self.current_day if day is None else max(1, int(day))
+        season, _day_in_season, _year = season_for_day(selected_day)
+        return RAW_BERRY_PRICE + (2 if season == "겨울" else 0)
+
+    def smoothie_sale_price(
+        self,
+        order: CustomerOrder | None = None,
+        day: int | None = None,
+    ) -> int:
+        selected_day = self.current_day if day is None else max(1, int(day))
+        selected_order = self.current_order if order is None else order
+        if selected_order is None:
+            return 0
+        price = selected_order.price + self.customer_tip(selected_order)
+        if weather_for_day(selected_day) == "heat":
+            price += 3
+        if is_blueberry_festival(selected_day):
+            price *= 2
+        return price
+
+    @staticmethod
+    def customer_tip(order: CustomerOrder) -> int:
+        patience_tip = max(0, (order.satisfaction - 50) // 10)
+        regular_tip = 2 if order.regular else 0
+        return patience_tip + regular_tip
+
+    def tick_customer_wait(self, seconds: float) -> None:
+        elapsed = max(0.0, float(seconds))
+        if elapsed <= 0:
+            return
+        self._sync_customer_orders()
+        for index, order in enumerate(self.customer_orders):
+            # The front customer becomes impatient fastest; people farther
+            # back understand that they are still waiting in line.
+            order.wait_seconds += elapsed * max(0.35, 1.0 - index * 0.12)
+
+    def daily_goal(self, day: int | None = None) -> dict[str, int | str]:
+        return daily_goal_for_day(self.current_day if day is None else day)
+
+    def daily_goal_progress(self, day: int | None = None) -> int:
+        goal = self.daily_goal(day)
+        kind = goal["kind"]
+        if kind == "harvest":
+            return self.daily_berries_harvested
+        if kind == "smoothies":
+            return self.daily_smoothies_sold
+        return self.daily_money_earned
+
+    def advance_to_day(self, day: int) -> dict | None:
+        new_day = max(1, int(day))
+        if new_day <= self.tracked_day:
+            return None
+        finished_day = self.tracked_day
+        goal = self.daily_goal(finished_day)
+        progress = self.daily_goal_progress(finished_day)
+        complete = progress >= int(goal["target"])
+        reward = int(goal["reward"]) if complete else 0
+        reputation_reward = int(goal["reputation"]) if complete else 0
+        if complete:
+            self.money += reward
+            self.reputation += reputation_reward
+            if is_blueberry_festival(finished_day):
+                self.festival_wins += 1
+        report = {
+            "day": finished_day,
+            "earned": self.daily_money_earned,
+            "spent": self.daily_money_spent,
+            "profit": self.daily_money_earned - self.daily_money_spent,
+            "harvested": self.daily_berries_harvested,
+            "blueberries_sold": self.daily_blueberries_sold,
+            "smoothies_sold": self.daily_smoothies_sold,
+            "goal_label": str(goal["label"]),
+            "goal_progress": progress,
+            "goal_target": int(goal["target"]),
+            "goal_complete": complete,
+            "reward": reward,
+            "reputation_reward": reputation_reward,
+            "next_day": new_day,
+        }
+        self.pending_daily_report = report
+        self.tracked_day = new_day
+        self.daily_berries_harvested = 0
+        self.daily_blueberries_sold = 0
+        self.daily_smoothies_sold = 0
+        self.daily_money_earned = 0
+        self.daily_money_spent = 0
+        return report
+
+    def clear_daily_report(self) -> None:
+        self.pending_daily_report = None
 
     def bag_stacks(self) -> list[tuple[str, int]]:
         stacks: list[tuple[str, int]] = []
@@ -193,13 +495,95 @@ class GameState:
         future_stacks = (current + amount + BAG_STACK_SIZE - 1) // BAG_STACK_SIZE
         return self.bag_slots_used + future_stacks - current_stacks <= BAG_SLOT_COUNT
 
+    def facility_level(self, key: str) -> int:
+        return max(0, min(MAX_FACILITY_LEVEL, int(self.facility_levels.get(key, 0))))
+
+    def facility_build_cost(self, key: str) -> int:
+        return int(FACILITY_CONFIG[key]["cost"])
+
+    def facility_upgrade_cost(self, key: str) -> int | None:
+        level = self.facility_level(key)
+        if level <= 0 or level >= MAX_FACILITY_LEVEL:
+            return None
+        return self.facility_build_cost(key) * (level + 1)
+
+    def facility_yield(self, key: str) -> int:
+        level = self.facility_level(key)
+        yields = FACILITY_CONFIG[key]["yields"]
+        return int(yields[level])
+
+    def facility_is_ready(self, key: str, day: int | None = None) -> bool:
+        level = self.facility_level(key)
+        selected_day = self.current_day if day is None else max(1, int(day))
+        return level > 0 and selected_day >= int(self.facility_ready_days.get(key, 0))
+
+    def build_facility(self, key: str, day: int | None = None) -> tuple[bool, str]:
+        if key not in FACILITY_CONFIG:
+            return False, "알 수 없는 생산 시설이에요."
+        config = FACILITY_CONFIG[key]
+        if self.facility_level(key) > 0:
+            return False, f"{config['name']}은 이미 지어져 있어요."
+        required_rank = int(config["unlock_rank"])
+        if self.farm_rank < required_rank:
+            return False, f"농장 등급 {required_rank}부터 {config['name']}을 지을 수 있어요."
+        cost = self.facility_build_cost(key)
+        if self.money < cost:
+            return False, f"{config['name']} 건설에는 {cost:,}코인이 필요해요."
+        selected_day = self.current_day if day is None else max(1, int(day))
+        self.money -= cost
+        self.daily_money_spent += cost
+        self.facility_levels[key] = 1
+        self.facility_ready_days[key] = selected_day + 1
+        return True, f"{config['name']}을 지었어요! 내일부터 {config['product_name']}을 받을 수 있어요."
+
+    def upgrade_facility(self, key: str) -> tuple[bool, str]:
+        if key not in FACILITY_CONFIG:
+            return False, "알 수 없는 생산 시설이에요."
+        config = FACILITY_CONFIG[key]
+        level = self.facility_level(key)
+        if level <= 0:
+            return False, f"먼저 {config['name']}을 지어 주세요."
+        if level >= MAX_FACILITY_LEVEL:
+            return False, f"{config['name']}은 이미 최고 단계예요."
+        required_rank = int(config["unlock_rank"]) + level
+        if self.farm_rank < required_rank:
+            return False, f"{level + 1}단계 업그레이드는 농장 등급 {required_rank}부터 가능해요."
+        cost = self.facility_upgrade_cost(key)
+        assert cost is not None
+        if self.money < cost:
+            return False, f"업그레이드에는 {cost:,}코인이 필요해요."
+        self.money -= cost
+        self.daily_money_spent += cost
+        self.facility_levels[key] = level + 1
+        amount = self.facility_yield(key)
+        return True, f"{config['name']}이 {level + 1}단계가 됐어요! 하루 생산량은 {amount}개예요."
+
+    def collect_facility(self, key: str, day: int | None = None) -> tuple[bool, str]:
+        if key not in FACILITY_CONFIG:
+            return False, "알 수 없는 생산 시설이에요."
+        config = FACILITY_CONFIG[key]
+        level = self.facility_level(key)
+        if level <= 0:
+            return False, f"아직 {config['name']}을 짓지 않았어요."
+        selected_day = self.current_day if day is None else max(1, int(day))
+        ready_day = int(self.facility_ready_days.get(key, selected_day + 1))
+        if selected_day < ready_day:
+            return False, f"{config['product_name']}은 {ready_day}일차에 준비돼요."
+        product = str(config["product"])
+        amount = self.facility_yield(key)
+        if not self.can_add_to_bag(product, amount):
+            return False, "가방에 빈 칸이 부족해요. 재료를 사용한 뒤 다시 수확해 주세요."
+        setattr(self, product, self.inventory(product) + amount)
+        self.facility_ready_days[key] = selected_day + 1
+        return True, f"{config['name']}에서 {config['product_name']} {amount}개를 받았어요!"
+
     def _sync_customer_orders(self) -> None:
         self.customers_waiting = max(
             0, min(CUSTOMER_QUEUE_SIZE, int(self.customers_waiting))
         )
         self.customer_orders = self.customer_orders[:self.customers_waiting]
         while len(self.customer_orders) < self.customers_waiting:
-            self.customer_orders.append(CustomerOrder.random())
+            self.customer_orders.append(self.make_customer_order())
 
     @property
     def current_order(self) -> CustomerOrder | None:
@@ -215,7 +599,7 @@ class GameState:
         self._sync_customer_orders()
         if self.customers_waiting >= CUSTOMER_QUEUE_SIZE:
             return False
-        self.customer_orders.append(order or CustomerOrder.random(rng))
+        self.customer_orders.append(order or self.make_customer_order(rng))
         self.customers_waiting += 1
         return True
 
@@ -231,12 +615,14 @@ class GameState:
         if self.seeds < 1:
             return False, "씨앗이 없어요. 가게에서 씨앗을 사 주세요."
         self.seeds -= 1
+        grow_seconds = self.crop_seconds_for_day(GROW_SECONDS)
         self.plots[plot_index] = Plot(
             planted=True,
-            ready_at=current + GROW_SECONDS,
-            cycle_seconds=GROW_SECONDS,
+            ready_at=current + grow_seconds,
+            cycle_seconds=grow_seconds,
         )
-        return True, "블루베리 씨앗을 심었어요!"
+        weather_note = " 비 덕분에 빨리 자라요!" if self.weather == "rain" else ""
+        return True, "블루베리 씨앗을 심었어요!" + weather_note
 
     def harvest(self, plot_index: int, now: float | None = None) -> tuple[bool, str]:
         current = time.time() if now is None else now
@@ -247,16 +633,19 @@ class GameState:
             return False, "빈 밭이에요. 눌러서 씨앗을 심어 주세요."
         if not plot.is_ready(current):
             return False, f"조금만 기다려 주세요. {int(plot.remaining(current)) + 1}초 남았어요."
-        if not self.can_add_to_bag("blueberries", HARVEST_YIELD):
+        harvest_yield = self.harvest_yield_for_day()
+        if not self.can_add_to_bag("blueberries", harvest_yield):
             return False, "가방이 가득 차서 수확할 수 없어요. B를 눌러 가방을 확인하세요."
-        self.blueberries += HARVEST_YIELD
-        self.berries_harvested += HARVEST_YIELD
+        self.blueberries += harvest_yield
+        self.berries_harvested += harvest_yield
+        self.daily_berries_harvested += harvest_yield
+        regrow_seconds = self.crop_seconds_for_day(REGROW_SECONDS)
         self.plots[plot_index] = Plot(
             planted=True,
-            ready_at=current + REGROW_SECONDS,
-            cycle_seconds=REGROW_SECONDS,
+            ready_at=current + regrow_seconds,
+            cycle_seconds=regrow_seconds,
         )
-        return True, f"싱싱한 블루베리 {HARVEST_YIELD}개를 수확했어요!"
+        return True, f"싱싱한 블루베리 {harvest_yield}개를 수확했어요!"
 
     def use_plot(self, plot_index: int, now: float | None = None) -> tuple[bool, str]:
         current = time.time() if now is None else now
@@ -276,16 +665,20 @@ class GameState:
         if not self.can_add_to_bag(key, 1):
             return False, "가방 16칸이 모두 찼어요. 재료를 사용하거나 판매해 주세요."
         self.money -= cost
+        self.daily_money_spent += cost
         setattr(self, key, self.inventory(key) + 1)
         return True, f"{ITEM_LABELS[key]} 1개를 샀어요."
 
-    def sell_blueberry(self) -> tuple[bool, str]:
+    def sell_blueberry(self, day: int | None = None) -> tuple[bool, str]:
         if self.blueberries < 1:
             return False, "판매할 블루베리가 없어요."
+        price = self.raw_blueberry_price(day)
         self.blueberries -= 1
-        self.money += RAW_BERRY_PRICE
+        self.money += price
         self.berries_sold += 1
-        return True, f"블루베리 1개를 팔아 {RAW_BERRY_PRICE}코인을 벌었어요."
+        self.daily_blueberries_sold += 1
+        self.daily_money_earned += price
+        return True, f"블루베리 1개를 팔아 {price}코인을 벌었어요."
 
     def make_smoothie(
         self,
@@ -314,6 +707,7 @@ class GameState:
             elif difference > 0:
                 differences.append(f"{labels[key]} {difference}개 빼기")
         if differences:
+            order.wait_seconds += 4.0
             return False, "주문과 달라요: " + ", ".join(differences)
 
         missing: list[str] = []
@@ -325,10 +719,18 @@ class GameState:
         for key, amount in recipe.items():
             setattr(self, key, self.inventory(key) - amount)
         self.smoothies += 1
-        self.prepared_order = CustomerOrder(**order.recipe)
-        return True, f"주문대로 스무디 완성! 판매하면 {order.price}코인을 받아요."
+        self.prepared_order = CustomerOrder(
+            **order.recipe,
+            customer_name=order.customer_name,
+            vip=order.vip,
+            regular=order.regular,
+            story=order.story,
+            wait_seconds=order.wait_seconds,
+        )
+        sale_price = self.smoothie_sale_price(order)
+        return True, f"주문대로 스무디 완성! 판매하면 {sale_price}코인을 받아요."
 
-    def sell_smoothie(self) -> tuple[bool, str]:
+    def sell_smoothie(self, day: int | None = None) -> tuple[bool, str]:
         order = self.current_order
         if order is None:
             return False, "지금은 기다리는 손님이 없어요. 새 손님을 잠시 기다려 주세요."
@@ -339,10 +741,28 @@ class GameState:
         self.smoothies -= 1
         self.customers_waiting -= 1
         self.customer_orders.pop(0)
-        self.money += order.price
+        sale_price = self.smoothie_sale_price(order, day)
+        self.money += sale_price
         self.smoothies_sold += 1
+        self.daily_smoothies_sold += 1
+        self.daily_money_earned += sale_price
+        reputation_gain = 5 if order.vip else 2
+        if order.satisfaction >= 85:
+            reputation_gain += 1
+        if order.regular:
+            reputation_gain += 1
+        self.reputation += reputation_gain
+        if order.vip:
+            self.vip_customers_served += 1
+        self.customer_visits[order.customer_name] = (
+            self.customer_visits.get(order.customer_name, 0) + 1
+        )
         self.prepared_order = None
-        return True, f"주문 스무디 판매 성공! 재료만큼 {order.price}코인을 벌었어요."
+        customer_type = "VIP" if order.vip else ("단골" if order.regular else "손님")
+        return True, (
+            f"{order.customer_name} {customer_type} 만족도 {order.satisfaction}%! "
+            f"{sale_price}코인 · 평판 +{reputation_gain}"
+        )
 
     def buy_land(self) -> tuple[bool, str]:
         if self.active_plots >= MAX_PLOTS:
@@ -351,6 +771,7 @@ class GameState:
         if self.money < cost:
             return False, f"텃밭을 사려면 {cost:,}코인이 필요해요."
         self.money -= cost
+        self.daily_money_spent += cost
         self.active_plots += 1
         self.land_purchased += 1
         return True, f"새 텃밭을 샀어요! 이제 밭이 {self.active_plots}칸이에요."
@@ -385,8 +806,9 @@ class GameState:
         try:
             raw = json.loads(save_path.read_text(encoding="utf-8"))
             save_version = int(raw.get("save_version", 1))
-            if save_version not in (1, SAVE_VERSION):
+            if save_version not in (1, 2, SAVE_VERSION):
                 raise ValueError("지원하지 않는 저장 파일 버전입니다.")
+            had_tracked_day = "tracked_day" in raw
             plot_data = raw.pop("plots")
             order_data = raw.pop("customer_orders", [])
             prepared_order_data = raw.pop("prepared_order", None)
@@ -395,6 +817,44 @@ class GameState:
             state = cls(**{key: value for key, value in raw.items() if key in allowed})
             state.active_plots = max(STARTING_PLOTS, min(MAX_PLOTS, int(state.active_plots)))
             state.game_elapsed_seconds = max(0.0, float(state.game_elapsed_seconds))
+            state.reputation = max(0, int(state.reputation))
+            state.vip_customers_served = max(0, int(state.vip_customers_served))
+            state.festival_wins = max(0, int(state.festival_wins))
+            raw_visits = state.customer_visits if isinstance(state.customer_visits, dict) else {}
+            state.customer_visits = {
+                str(name)[:24]: max(0, int(visits))
+                for name, visits in raw_visits.items()
+            }
+            for counter_name in (
+                "daily_berries_harvested",
+                "daily_blueberries_sold",
+                "daily_smoothies_sold",
+                "daily_money_earned",
+                "daily_money_spent",
+            ):
+                setattr(state, counter_name, max(0, int(getattr(state, counter_name))))
+            if had_tracked_day:
+                state.tracked_day = max(1, int(state.tracked_day))
+            else:
+                # Old saves did not have daily counters. Start tracking from
+                # their current day instead of inventing reports for past days.
+                state.tracked_day = state.current_day
+            if not isinstance(state.pending_daily_report, dict):
+                state.pending_daily_report = None
+            raw_levels = state.facility_levels if isinstance(state.facility_levels, dict) else {}
+            raw_ready_days = (
+                state.facility_ready_days
+                if isinstance(state.facility_ready_days, dict)
+                else {}
+            )
+            state.facility_levels = {
+                key: max(0, min(MAX_FACILITY_LEVEL, int(raw_levels.get(key, 0))))
+                for key in FACILITY_KEYS
+            }
+            state.facility_ready_days = {
+                key: max(0, int(raw_ready_days.get(key, 0)))
+                for key in FACILITY_KEYS
+            }
             state.customers_waiting = max(
                 0, min(CUSTOMER_QUEUE_SIZE, int(state.customers_waiting))
             )

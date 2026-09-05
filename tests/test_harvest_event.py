@@ -179,6 +179,67 @@ class HarvestEventTests(unittest.TestCase):
 
         self.assertEqual(self.app.overlay, "bag")
 
+    def test_facility_can_be_built_and_collected_from_world_interaction(self):
+        self.app.state.money = 1_000
+        self.app.state.reputation = 0
+        self.app.player.update(main.BEEHIVE.centerx, main.BEEHIVE.bottom + 38)
+        event = pygame.event.Event(
+            pygame.KEYDOWN,
+            key=pygame.K_e,
+            scancode=pygame.KSCAN_E,
+            mod=0,
+        )
+
+        self.app.handle_key(event)
+        self.assertEqual(self.app.overlay, "facility")
+        self.assertEqual(self.app.selected_facility, "beehive")
+        self.app.handle_key(event)
+        self.assertEqual(self.app.state.facility_level("beehive"), 1)
+
+        self.app.state.game_elapsed_seconds = main.DAY_SECONDS
+        before_honey = self.app.state.honey
+        self.app.handle_key(event)
+        self.assertEqual(
+            self.app.state.honey,
+            before_honey + self.app.state.facility_yield("beehive"),
+        )
+        self.app.draw()
+
+    def test_day_rollover_opens_summary_and_keeps_time_paused_until_closed(self):
+        self.app.state.game_elapsed_seconds = main.DAY_SECONDS - 0.01
+        self.app.state.tracked_day = 1
+        self.app.state.daily_berries_harvested = 8
+
+        self.app.update(0.02)
+
+        self.assertEqual(self.app.overlay, "daily_report")
+        self.assertIsNotNone(self.app.state.pending_daily_report)
+        paused_at = self.app.state.game_elapsed_seconds
+        self.app.update(30.0)
+        self.assertEqual(self.app.state.game_elapsed_seconds, paused_at)
+        self.app.draw()
+
+        event = pygame.event.Event(
+            pygame.KEYDOWN,
+            key=pygame.K_e,
+            scancode=pygame.KSCAN_E,
+            mod=0,
+        )
+        self.app.handle_key(event)
+        self.assertIsNone(self.app.overlay)
+        self.assertIsNone(self.app.state.pending_daily_report)
+
+    def test_festival_weather_and_vip_customer_scene_draws(self):
+        festival_day = main.DAYS_PER_SEASON * 2
+        self.app.state.game_elapsed_seconds = (festival_day - 1) * main.DAY_SECONDS
+        self.app.state.tracked_day = festival_day
+        self.app.state.reputation = 25
+        self.app.state.customers_waiting = 1
+        self.app.state.customer_orders = [self.app.state.make_customer_order()]
+        self.assertTrue(self.app.state.current_order.vip)
+
+        self.app.draw()
+
 
 if __name__ == "__main__":
     unittest.main()

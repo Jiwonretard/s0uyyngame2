@@ -83,6 +83,37 @@ class HarvestEventTests(unittest.TestCase):
         self.assertFalse(self.app._collides(0, 0))
         self.app.draw()
 
+    def test_roof_detail_lines_stay_inside_sloped_edges(self):
+        rect = pygame.Rect(120, 170, 440, 250)
+        widths = []
+        apex_y = rect.top - 82
+        base_y = rect.top + 43
+        full_half_width = rect.width / 2 + 28
+
+        for row in range(4):
+            start, end = main.roof_detail_segment(rect, row)
+            self.assertEqual(start[1], end[1])
+            progress = (start[1] - apex_y) / (base_y - apex_y)
+            edge_half_width = full_half_width * progress
+            self.assertGreater(start[0], rect.centerx - edge_half_width)
+            self.assertLess(end[0], rect.centerx + edge_half_width)
+            widths.append(end[0] - start[0])
+
+        self.assertEqual(widths, sorted(widths, reverse=True))
+
+    def test_shop_name_is_shortened_to_shop(self):
+        self.app.player.update(main.SHOP.centerx, main.SHOP.bottom + 42)
+        target = self.app.nearest_interaction()
+        self.assertIsNotNone(target)
+        self.assertEqual(target["kind"], "shop")
+        self.assertEqual(target["prompt"], "상점 들어가기")
+
+        with patch.object(self.app, "draw_house") as draw_house:
+            self.app.draw_world()
+        titles = [call.args[1] for call in draw_house.call_args_list]
+        self.assertIn("상점", titles)
+        self.assertNotIn("꿀 · 우유 · 얼음 상점", titles)
+
     def test_physical_e_scancode_works_with_non_latin_input(self):
         before = self.app.state.blueberries
         event = pygame.event.Event(

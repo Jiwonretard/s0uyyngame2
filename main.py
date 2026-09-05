@@ -190,6 +190,22 @@ def distance_to_rect(point: tuple[float, float], rect: pygame.Rect) -> float:
     return distance(point, (closest_x, closest_y))
 
 
+def roof_detail_segment(
+    rect: pygame.Rect,
+    row: int,
+) -> tuple[tuple[int, int], tuple[int, int]]:
+    """Return a horizontal detail line clipped inside the triangular roof."""
+    apex_y = rect.top - 82
+    base_y = rect.top + 43
+    y = rect.top + 32 - max(0, int(row)) * 25
+    slope_progress = max(0.0, min(1.0, (y - apex_y) / (base_y - apex_y)))
+    half_width = (rect.width / 2 + 28) * slope_progress
+    edge_padding = 12
+    left = round(rect.centerx - half_width + edge_padding)
+    right = round(rect.centerx + half_width - edge_padding)
+    return (left, y), (right, y)
+
+
 @dataclass
 class Particle:
     x: float
@@ -876,7 +892,7 @@ class GameApp:
         )
         fixed = [
             ("save", (HOUSE.centerx, HOUSE.bottom + 37), 82, "집 앞에서 농장 저장하기"),
-            ("shop", (SHOP.centerx, SHOP.bottom + 42), 90, "재료 상점 들어가기"),
+            ("shop", (SHOP.centerx, SHOP.bottom + 42), 90, "상점 들어가기"),
             ("craft", (CAFE.centerx, CAFE.bottom + 42), 90, craft_prompt),
             ("sell_raw", (MARKET.centerx, MARKET.bottom + 38), 88,
              f"생과 시장 열기 · 블루베리 {self.state.blueberries} · 황금 {self.state.golden_blueberries}"),
@@ -1376,10 +1392,15 @@ class GameApp:
                      (rect.right + 28, rect.top + 43)]
         pygame.draw.polygon(self.screen, roof, roof_poly)
         pygame.draw.polygon(self.screen, tuple(max(0, c - 35) for c in roof), roof_poly, 5)
-        for row, inset in enumerate((12, 28, 46, 64)):
-            y = rect.top + 32 - row * 25
-            pygame.draw.line(self.screen, tuple(max(0, c - 24) for c in roof),
-                             (rect.left + inset, y), (rect.right - inset, y), 4)
+        for row in range(4):
+            start, end = roof_detail_segment(rect, row)
+            pygame.draw.line(
+                self.screen,
+                tuple(max(0, c - 24) for c in roof),
+                start,
+                end,
+                4,
+            )
         chimney = pygame.Rect(rect.right - 100, rect.top - 62, 36, 66)
         pygame.draw.rect(self.screen, WOOD_DARK, chimney.inflate(6, 4))
         pygame.draw.rect(self.screen, (151, 83, 66), chimney)
@@ -1889,7 +1910,7 @@ class GameApp:
     def draw_world_labels(self) -> None:
         labels = [
             ((HOUSE.centerx, HOUSE.bottom + 32), "집 · 저장"),
-            ((SHOP.centerx, SHOP.bottom + 34), "재료 상점"),
+            ((SHOP.centerx, SHOP.bottom + 34), "상점"),
             ((CAFE.centerx, CAFE.bottom + 34), "스무디 만들기"),
             ((MARKET.centerx, MARKET.bottom + 32), "생과 판매"),
             ((SMOOTHIE_CART.centerx, SMOOTHIE_CART.bottom + 34), "스무디 판매"),
@@ -1911,7 +1932,7 @@ class GameApp:
         self.draw_expansion_sign()
         self.draw_facilities()
         self.draw_house(HOUSE, "블루베리 농장집", (244, 210, 151), (112, 73, 72))
-        self.draw_house(SHOP, "꿀 · 우유 · 얼음 상점", (240, 223, 174), (64, 124, 101))
+        self.draw_house(SHOP, "상점", (240, 223, 174), (64, 124, 101))
         self.draw_house(CAFE, "블루베리 블렌더", (229, 205, 238), (112, 79, 157))
         self.draw_market()
         self.draw_smoothie_cart()
@@ -2151,7 +2172,7 @@ class GameApp:
         pygame.draw.rect(self.screen, WOOD_DARK, card.inflate(14, 14))
         pygame.draw.rect(self.screen, WOOD, card)
         pygame.draw.rect(self.screen, CREAM, card.inflate(-18, -18))
-        self.text("동네 재료 상점", 32, BLUEBERRY_DARK, card.centerx, 175, center=True)
+        self.text("상점", 32, BLUEBERRY_DARK, card.centerx, 175, center=True)
         self.text(f"보유 코인  {self.state.money}", 18, INK, card.centerx, 215, center=True)
         amounts = {"seeds": self.state.seeds, "honey": self.state.honey,
                    "milk": self.state.milk, "ice": self.state.ice}

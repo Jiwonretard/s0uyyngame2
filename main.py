@@ -37,7 +37,11 @@ CUSTOMER_RETURN_SECONDS = 14.0
 BASE_DIR = Path(__file__).resolve().parent
 SAVE_PATH = BASE_DIR / "save_game.json"
 SALE_SOUND_PATH = BASE_DIR / "assets" / "smoothie_sale.wav"
+BGM_PATH = BASE_DIR / "assets" / "blueberry_morning.ogg"
 PLAYER_SHEET_PATH = BASE_DIR / "assets" / "player_reference_sheet.png"
+BGM_NORMAL_VOLUME = 0.28
+BGM_DUCK_VOLUME = 0.055
+BGM_VOLUME_CHANGE_SPEED = 2.8
 
 INK = (48, 40, 42)
 WHITE = (255, 255, 255)
@@ -222,6 +226,10 @@ class GameApp:
         self.sale_channel: pygame.mixer.Channel | None = None
         self.pending_sale_sounds = 0
         self.audio_error = ""
+        self.music_error = ""
+        self.current_bgm_volume = BGM_NORMAL_VOLUME
+        self.bgm_duck_until = 0.0
+        self.bgm_muted = False
         self.particles: list[Particle] = []
         self.action_effects: list[ActionEffect] = []
         self.departing_customers: list[DepartingCustomer] = []
@@ -267,6 +275,14 @@ class GameApp:
             self.sale_channel = pygame.mixer.Channel(0)
         except (pygame.error, FileNotFoundError) as exc:
             self.audio_error = str(exc)
+        try:
+            if not pygame.mixer.get_init():
+                pygame.mixer.init(44100, -16, 2, 512)
+            pygame.mixer.music.load(str(BGM_PATH))
+            pygame.mixer.music.set_volume(self.current_bgm_volume)
+            pygame.mixer.music.play(-1, fade_ms=1400)
+        except (pygame.error, FileNotFoundError) as exc:
+            self.music_error = str(exc)
 
     def _load_player_frames(self) -> None:
         """Extract the 12 generated sprites by their connected alpha regions."""
@@ -437,6 +453,19 @@ class GameApp:
         if self.pending_sale_sounds and self.sale_channel and self.sale_sound and not self.sale_channel.get_busy():
             self.pending_sale_sounds -= 1
             self.sale_channel.play(self.sale_sound)
+            self.duck_background_music(self.sale_sound.get_length() + 0.25)
+        if not self.music_error:
+            effect_is_playing = bool(
+                self.sale_channel
+                and (self.sale_channel.get_busy() or self.pending_sale_sounds)
+            )
+            should_duck = effect_is_playing or time.time() < self.bgm_duck_until
+            target_volume = 0.0 if self.bgm_muted else (
+                BGM_DUCK_VOLUME if should_duck else BGM_NORMAL_VOLUME
+            )
+            amount = min(1.0, dt * BGM_VOLUME_CHANGE_SPEED)
+            self.current_bgm_volume += (target_volume - self.current_bgm_volume) * amount
+            pygame.mixer.music.set_volume(self.current_bgm_volume)
         if time.time() - self.last_autosave > 10.0:
             self.save()
 
@@ -470,15 +499,30 @@ class GameApp:
         self.action_timer = 0.36
         self.impact_timer = 0.28
 
+    def duck_background_music(self, seconds: float) -> None:
+        self.bgm_duck_until = max(self.bgm_duck_until, time.time() + max(0.0, seconds))
+        if not self.music_error and not self.bgm_muted:
+            self.current_bgm_volume = BGM_DUCK_VOLUME
+            pygame.mixer.music.set_volume(self.current_bgm_volume)
+
     def play_sale_sound(self) -> None:
         if not self.sale_sound or not self.sale_channel:
             if self.audio_error:
                 self.notify("판매는 됐지만 첨부 효과음을 재생하지 못했어요.", True)
             return
+        sound_length = (
+            self.sale_sound.get_length()
+            if hasattr(self.sale_sound, "get_length")
+            else 1.0
+        )
         if self.sale_channel.get_busy():
             self.pending_sale_sounds += 1
+            self.duck_background_music(
+                sound_length * (self.pending_sale_sounds + 1) + 0.25
+            )
         else:
             self.sale_channel.play(self.sale_sound)
+            self.duck_background_music(sound_length + 0.25)
 
     def nearest_interaction(self) -> dict | None:
         position = (self.player.x, self.player.y)
@@ -619,6 +663,13 @@ class GameApp:
                 self.close_help()
             elif self.overlay is None:
                 self.overlay = "help"
+            return
+        if event.key == pygame.K_m:
+            self.bgm_muted = not self.bgm_muted
+            self.current_bgm_volume = 0.0 if self.bgm_muted else BGM_NORMAL_VOLUME
+            if not self.music_error:
+                pygame.mixer.music.set_volume(self.current_bgm_volume)
+            self.notify("배경음악을 껐어요." if self.bgm_muted else "배경음악을 켰어요.")
             return
         if event.key == pygame.K_s and (event.mod & (pygame.KMOD_CTRL | pygame.KMOD_META)):
             self.save(announce=True)

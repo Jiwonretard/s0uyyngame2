@@ -16,17 +16,33 @@ from game_state import (  # noqa: E402
     DAYS_PER_SEASON,
     FACILITY_CONFIG,
     GAME_DAY_SECONDS,
+    GOLDEN_BLUEBERRY_PRICE,
     GROW_SECONDS,
     HARVEST_YIELD,
     LAND_BASE_COST,
     LAND_COST_STEP,
     RAW_BERRY_PRICE,
     REGROW_SECONDS,
+    SPECIAL_SMOOTHIE_BONUS,
+    TREE_DROP_TABLE,
     GameState,
     is_blueberry_festival,
     season_for_day,
+    tree_drop_key_for_roll,
     weather_for_day,
 )
+
+
+class FixedRng:
+    def __init__(self, roll: float, amount: int = 1):
+        self.roll = roll
+        self.amount = amount
+
+    def random(self) -> float:
+        return self.roll
+
+    def randint(self, start: int, end: int) -> int:
+        return max(start, min(end, self.amount))
 
 
 class GameStateTests(unittest.TestCase):
@@ -143,6 +159,119 @@ class GameStateTests(unittest.TestCase):
         self.assertEqual(state.money, 0)
         self.assertEqual(state.land_cost, second_cost + LAND_COST_STEP)
 
+    def test_tree_drop_probabilities_and_daily_shake_limit(self):
+        self.assertEqual(
+            TREE_DROP_TABLE,
+            (
+                (0.20, "blueberries"),
+                (0.40, "honey"),
+                (0.60, "milk"),
+                (0.80, "ice"),
+                (0.85, "coins"),
+                (0.90, "golden_blueberries"),
+                (0.95, "premium_honey"),
+                (1.00, "low_fat_milk"),
+            ),
+        )
+        threshold_cases = (
+            (0.00, "blueberries"),
+            (0.20, "honey"),
+            (0.40, "milk"),
+            (0.60, "ice"),
+            (0.80, "coins"),
+            (0.85, "golden_blueberries"),
+            (0.90, "premium_honey"),
+            (0.95, "low_fat_milk"),
+        )
+        for roll, expected in threshold_cases:
+            self.assertEqual(tree_drop_key_for_roll(roll), expected)
+
+        state = GameState.new(now=100.0)
+        starting_money = state.money
+        ok, _, key, amount = state.shake_tree(2, FixedRng(0.81, 150), day=1)
+        self.assertTrue(ok)
+        self.assertEqual((key, amount), ("coins", 150))
+        self.assertEqual(state.money, starting_money + 150)
+        self.assertEqual(state.daily_money_earned, 150)
+        self.assertTrue(state.tree_shaken_today(2, day=1))
+
+        ok, message, _key, _amount = state.shake_tree(
+            2, FixedRng(0.01, 3), day=1
+        )
+        self.assertFalse(ok)
+        self.assertIn("이미", message)
+
+        ok, _, key, amount = state.shake_tree(2, FixedRng(0.01, 3), day=2)
+        self.assertTrue(ok)
+        self.assertEqual((key, amount), ("blueberries", 3))
+        self.assertEqual(state.blueberries, 3)
+        self.assertEqual(state.trees_shaken, 2)
+
+    def test_golden_blueberry_sells_for_two_hundred_coins(self):
+        state = GameState.new(now=100.0)
+        state.golden_blueberries = 1
+        starting_money = state.money
+
+        ok, message = state.sell_golden_blueberry()
+
+        self.assertTrue(ok)
+        self.assertIn("황금 블루베리", message)
+        self.assertEqual(state.golden_blueberries, 0)
+        self.assertEqual(state.money, starting_money + GOLDEN_BLUEBERRY_PRICE)
+        self.assertEqual(state.golden_blueberries_sold, 1)
+
+    def test_special_smoothie_ingredients_add_one_hundred_each(self):
+        state = GameState.new(now=100.0)
+        order = CustomerOrder(3, 1, 1, 1)
+        state.customers_waiting = 1
+        state.customer_orders = [order]
+        for key, amount in order.recipe.items():
+            setattr(state, key, amount)
+        state.premium_honey = 1
+        state.low_fat_milk = 1
+        base_price = state.smoothie_sale_price(order)
+
+        ok, _ = state.make_smoothie(
+            order.recipe,
+            {"premium_honey": True, "low_fat_milk": True},
+        )
+
+        self.assertTrue(ok)
+        self.assertEqual(state.premium_honey, 0)
+        self.assertEqual(state.low_fat_milk, 0)
+        self.assertEqual(state.prepared_bonus, SPECIAL_SMOOTHIE_BONUS * 2)
+        self.assertEqual(
+            state.smoothie_sale_price(order),
+            base_price + SPECIAL_SMOOTHIE_BONUS * 2,
+        )
+        starting_money = state.money
+        ok, _ = state.sell_smoothie()
+        self.assertTrue(ok)
+        self.assertEqual(
+            state.money,
+            starting_money + base_price + SPECIAL_SMOOTHIE_BONUS * 2,
+        )
+        self.assertEqual(state.prepared_bonus, 0)
+        self.assertEqual(state.prepared_specials, [])
+
+    def test_missing_special_does_not_consume_regular_recipe(self):
+        state = GameState.new(now=100.0)
+        order = CustomerOrder(3, 1, 1, 1)
+        state.customers_waiting = 1
+        state.customer_orders = [order]
+        for key, amount in order.recipe.items():
+            setattr(state, key, amount)
+        before = tuple(state.inventory(key) for key in order.recipe)
+
+        ok, message = state.make_smoothie(
+            order.recipe,
+            {"premium_honey": True},
+        )
+
+        self.assertFalse(ok)
+        self.assertIn("고급 꿀", message)
+        self.assertEqual(tuple(state.inventory(key) for key in order.recipe), before)
+
     def test_bag_has_sixteen_slots_with_sixteen_items_per_stack(self):
         state = GameState.new(now=100.0)
         state.blueberries = BAG_SLOT_COUNT * BAG_STACK_SIZE
@@ -197,7 +326,10 @@ class GameStateTests(unittest.TestCase):
 
     def test_facilities_unlock_produce_and_upgrade_by_reputation_rank(self):
         state = GameState.new(now=100.0)
-        state.money = 1_000
+        state.money = 50_000
+        self.assertEqual(state.facility_build_cost("beehive"), 2_000)
+        self.assertEqual(state.facility_build_cost("ice_maker"), 4_000)
+        self.assertEqual(state.facility_build_cost("cow_barn"), 7_000)
         ok, _ = state.build_facility("beehive", day=1)
         self.assertTrue(ok)
         self.assertEqual(state.facility_level("beehive"), 1)
@@ -209,6 +341,7 @@ class GameStateTests(unittest.TestCase):
         ok, _ = state.collect_facility("beehive", day=2)
         self.assertTrue(ok)
         self.assertEqual(state.honey, 2)
+        self.assertEqual(state.facility_upgrade_cost("beehive"), 3_500)
 
         ok, _ = state.upgrade_facility("beehive")
         self.assertFalse(ok)
@@ -218,6 +351,7 @@ class GameStateTests(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(state.facility_level("beehive"), 2)
         self.assertEqual(state.facility_yield("beehive"), 3)
+        self.assertEqual(state.facility_upgrade_cost("beehive"), 6_000)
         self.assertLess(state.money, before_money)
 
         ok, message = state.build_facility("cow_barn", day=2)
@@ -303,6 +437,11 @@ class GameStateTests(unittest.TestCase):
                 CustomerOrder(3, 0, 1, 2),
                 CustomerOrder(3, 2, 2, 3),
             ]
+            state.golden_blueberries = 2
+            state.premium_honey = 3
+            state.low_fat_milk = 4
+            state.tree_shaken_days = {"1": 5}
+            state.trees_shaken = 7
             state.plant(1, now=100.0)
             state.save(path)
             loaded = GameState.load(path, now=101.0)
@@ -313,6 +452,11 @@ class GameStateTests(unittest.TestCase):
             self.assertEqual(loaded.plots[1].ready_at, 100.0 + GROW_SECONDS)
             self.assertEqual(loaded.customers_waiting, 2)
             self.assertEqual(loaded.customer_orders, state.customer_orders)
+            self.assertEqual(loaded.golden_blueberries, 2)
+            self.assertEqual(loaded.premium_honey, 3)
+            self.assertEqual(loaded.low_fat_milk, 4)
+            self.assertEqual(loaded.tree_shaken_days, {"1": 5})
+            self.assertEqual(loaded.trees_shaken, 7)
 
     def test_version_one_save_keeps_progress_and_gains_customer_orders(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -361,6 +505,9 @@ class GameStateTests(unittest.TestCase):
                 "daily_money_earned", "daily_money_spent",
                 "pending_daily_report", "festival_wins",
                 "facility_levels", "facility_ready_days",
+                "golden_blueberries", "premium_honey", "low_fat_milk",
+                "golden_blueberries_sold", "trees_shaken", "tree_shaken_days",
+                "prepared_bonus", "prepared_specials",
             ):
                 data.pop(key)
             path.write_text(json.dumps(data), encoding="utf-8")

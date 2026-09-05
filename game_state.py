@@ -28,7 +28,16 @@ BAG_STACK_SIZE = 16
 BAG_COLUMNS = 4
 BAG_ROWS = 4
 BAG_SLOT_COUNT = BAG_COLUMNS * BAG_ROWS
-BAG_ITEM_KEYS = ("blueberries", "seeds", "honey", "milk", "ice")
+BAG_ITEM_KEYS = (
+    "blueberries",
+    "seeds",
+    "honey",
+    "milk",
+    "ice",
+    "golden_blueberries",
+    "premium_honey",
+    "low_fat_milk",
+)
 
 DAYS_PER_SEASON = 7
 SEASONS = ("봄", "여름", "가을", "겨울")
@@ -47,7 +56,8 @@ FACILITY_CONFIG = {
         "name": "벌통",
         "product": "honey",
         "product_name": "꿀",
-        "cost": 120,
+        "cost": 2_000,
+        "upgrade_costs": (0, 3_500, 6_000),
         "unlock_rank": 1,
         "yields": (0, 2, 3, 5),
     },
@@ -55,7 +65,8 @@ FACILITY_CONFIG = {
         "name": "제빙기",
         "product": "ice",
         "product_name": "얼음",
-        "cost": 260,
+        "cost": 4_000,
+        "upgrade_costs": (0, 7_000, 11_000),
         "unlock_rank": 2,
         "yields": (0, 4, 7, 10),
     },
@@ -63,7 +74,8 @@ FACILITY_CONFIG = {
         "name": "젖소 축사",
         "product": "milk",
         "product_name": "우유",
-        "cost": 520,
+        "cost": 7_000,
+        "upgrade_costs": (0, 12_000, 18_000),
         "unlock_rank": 3,
         "yields": (0, 2, 4, 6),
     },
@@ -99,10 +111,25 @@ ITEM_LABELS = {
 
 BAG_ITEM_LABELS = {
     "blueberries": "블루베리",
+    "golden_blueberries": "황금 블루베리",
+    "premium_honey": "고급 꿀",
+    "low_fat_milk": "저지방 우유",
     **ITEM_LABELS,
 }
 
 RAW_BERRY_PRICE = 3
+GOLDEN_BLUEBERRY_PRICE = 200
+SPECIAL_SMOOTHIE_BONUS = 100
+TREE_DROP_TABLE = (
+    (0.20, "blueberries"),
+    (0.40, "honey"),
+    (0.60, "milk"),
+    (0.80, "ice"),
+    (0.85, "coins"),
+    (0.90, "golden_blueberries"),
+    (0.95, "premium_honey"),
+    (1.00, "low_fat_milk"),
+)
 # Kept as the familiar reference price for older code and save files. New
 # customer orders use CustomerOrder.price, which rises with every ingredient.
 SMOOTHIE_PRICE = 20
@@ -161,6 +188,14 @@ def daily_goal_for_day(day: int) -> dict[str, int | str]:
         "reward": reward,
         "reputation": reputation,
     }
+
+
+def tree_drop_key_for_roll(roll: float) -> str:
+    normalized = max(0.0, min(0.999999, float(roll)))
+    for upper_bound, key in TREE_DROP_TABLE:
+        if normalized < upper_bound:
+            return key
+    return "low_fat_milk"
 
 
 @dataclass(eq=True)
@@ -267,6 +302,9 @@ class GameState:
     honey: int = 0
     milk: int = 0
     ice: int = 0
+    golden_blueberries: int = 0
+    premium_honey: int = 0
+    low_fat_milk: int = 0
     smoothies: int = 0
     active_plots: int = STARTING_PLOTS
     plots: list[Plot] = field(default_factory=lambda: [Plot() for _ in range(MAX_PLOTS)])
@@ -274,6 +312,8 @@ class GameState:
     customers_waiting: int = CUSTOMER_QUEUE_SIZE
     customer_orders: list[CustomerOrder] = field(default_factory=list)
     prepared_order: CustomerOrder | None = None
+    prepared_bonus: int = 0
+    prepared_specials: list[str] = field(default_factory=list)
     berries_sold: int = 0
     berries_harvested: int = 0
     land_purchased: int = 0
@@ -293,6 +333,9 @@ class GameState:
     daily_money_spent: int = 0
     pending_daily_report: dict | None = None
     festival_wins: int = 0
+    golden_blueberries_sold: int = 0
+    trees_shaken: int = 0
+    tree_shaken_days: dict[str, int] = field(default_factory=dict)
     facility_levels: dict[str, int] = field(
         default_factory=lambda: {key: 0 for key in FACILITY_KEYS}
     )
@@ -400,6 +443,8 @@ class GameState:
             price += 3
         if is_blueberry_festival(selected_day):
             price *= 2
+        if self.prepared_order is not None and self.prepared_order == selected_order:
+            price += max(0, int(self.prepared_bonus))
         return price
 
     @staticmethod
@@ -495,6 +540,40 @@ class GameState:
         future_stacks = (current + amount + BAG_STACK_SIZE - 1) // BAG_STACK_SIZE
         return self.bag_slots_used + future_stacks - current_stacks <= BAG_SLOT_COUNT
 
+    def tree_shaken_today(self, tree_index: int, day: int | None = None) -> bool:
+        selected_day = self.current_day if day is None else max(1, int(day))
+        return int(self.tree_shaken_days.get(str(tree_index), 0)) == selected_day
+
+    def shake_tree(
+        self,
+        tree_index: int,
+        rng: random.Random | None = None,
+        *,
+        day: int | None = None,
+    ) -> tuple[bool, str, str | None, int]:
+        selected_day = self.current_day if day is None else max(1, int(day))
+        if self.tree_shaken_today(tree_index, selected_day):
+            return False, "이 나무는 오늘 이미 흔들었어요. 내일 다시 와 주세요.", None, 0
+        picker = rng if rng is not None else random
+        key = tree_drop_key_for_roll(picker.random())
+        if key == "coins":
+            amount = picker.randint(100, 250)
+        elif key in ("golden_blueberries", "premium_honey", "low_fat_milk"):
+            amount = 1
+        else:
+            amount = picker.randint(1, 3)
+        if key != "coins" and not self.can_add_to_bag(key, amount):
+            return False, "가방에 빈 칸이 부족해서 떨어진 아이템을 받을 수 없어요.", None, 0
+
+        self.tree_shaken_days[str(tree_index)] = selected_day
+        self.trees_shaken += 1
+        if key == "coins":
+            self.money += amount
+            self.daily_money_earned += amount
+            return True, f"나무에서 코인 {amount}개가 떨어졌어요!", key, amount
+        setattr(self, key, self.inventory(key) + amount)
+        return True, f"나무에서 {BAG_ITEM_LABELS[key]} {amount}개가 떨어졌어요!", key, amount
+
     def facility_level(self, key: str) -> int:
         return max(0, min(MAX_FACILITY_LEVEL, int(self.facility_levels.get(key, 0))))
 
@@ -505,7 +584,7 @@ class GameState:
         level = self.facility_level(key)
         if level <= 0 or level >= MAX_FACILITY_LEVEL:
             return None
-        return self.facility_build_cost(key) * (level + 1)
+        return int(FACILITY_CONFIG[key]["upgrade_costs"][level])
 
     def facility_yield(self, key: str) -> int:
         level = self.facility_level(key)
@@ -680,9 +759,19 @@ class GameState:
         self.daily_money_earned += price
         return True, f"블루베리 1개를 팔아 {price}코인을 벌었어요."
 
+    def sell_golden_blueberry(self) -> tuple[bool, str]:
+        if self.golden_blueberries < 1:
+            return False, "판매할 황금 블루베리가 없어요."
+        self.golden_blueberries -= 1
+        self.money += GOLDEN_BLUEBERRY_PRICE
+        self.golden_blueberries_sold += 1
+        self.daily_money_earned += GOLDEN_BLUEBERRY_PRICE
+        return True, f"황금 블루베리 1개를 팔아 {GOLDEN_BLUEBERRY_PRICE}코인을 벌었어요!"
+
     def make_smoothie(
         self,
         selected_recipe: dict[str, int] | None = None,
+        selected_specials: dict[str, bool] | None = None,
     ) -> tuple[bool, str]:
         order = self.current_order
         if order is None:
@@ -716,8 +805,26 @@ class GameState:
                 missing.append(f"{labels[key]} {amount - self.inventory(key)}")
         if missing:
             return False, "재료가 부족해요: " + ", ".join(missing)
+        special_labels = {
+            "premium_honey": "고급 꿀",
+            "low_fat_milk": "저지방 우유",
+        }
+        chosen_specials = [
+            key
+            for key, selected in (selected_specials or {}).items()
+            if selected and key in special_labels
+        ]
+        missing_specials = [
+            special_labels[key]
+            for key in chosen_specials
+            if self.inventory(key) < 1
+        ]
+        if missing_specials:
+            return False, "특수 재료가 부족해요: " + ", ".join(missing_specials)
         for key, amount in recipe.items():
             setattr(self, key, self.inventory(key) - amount)
+        for key in chosen_specials:
+            setattr(self, key, self.inventory(key) - 1)
         self.smoothies += 1
         self.prepared_order = CustomerOrder(
             **order.recipe,
@@ -727,8 +834,11 @@ class GameState:
             story=order.story,
             wait_seconds=order.wait_seconds,
         )
+        self.prepared_specials = chosen_specials
+        self.prepared_bonus = len(chosen_specials) * SPECIAL_SMOOTHIE_BONUS
         sale_price = self.smoothie_sale_price(order)
-        return True, f"주문대로 스무디 완성! 판매하면 {sale_price}코인을 받아요."
+        bonus_note = f" 특수 재료 보너스 +{self.prepared_bonus}코인!" if chosen_specials else ""
+        return True, f"주문대로 스무디 완성! 판매하면 {sale_price}코인을 받아요.{bonus_note}"
 
     def sell_smoothie(self, day: int | None = None) -> tuple[bool, str]:
         order = self.current_order
@@ -758,6 +868,8 @@ class GameState:
             self.customer_visits.get(order.customer_name, 0) + 1
         )
         self.prepared_order = None
+        self.prepared_bonus = 0
+        self.prepared_specials = []
         customer_type = "VIP" if order.vip else ("단골" if order.regular else "손님")
         return True, (
             f"{order.customer_name} {customer_type} 만족도 {order.satisfaction}%! "
@@ -820,6 +932,16 @@ class GameState:
             state.reputation = max(0, int(state.reputation))
             state.vip_customers_served = max(0, int(state.vip_customers_served))
             state.festival_wins = max(0, int(state.festival_wins))
+            state.golden_blueberries = max(0, int(state.golden_blueberries))
+            state.premium_honey = max(0, int(state.premium_honey))
+            state.low_fat_milk = max(0, int(state.low_fat_milk))
+            state.golden_blueberries_sold = max(0, int(state.golden_blueberries_sold))
+            state.trees_shaken = max(0, int(state.trees_shaken))
+            raw_tree_days = state.tree_shaken_days if isinstance(state.tree_shaken_days, dict) else {}
+            state.tree_shaken_days = {
+                str(index): max(0, int(shaken_day))
+                for index, shaken_day in raw_tree_days.items()
+            }
             raw_visits = state.customer_visits if isinstance(state.customer_visits, dict) else {}
             state.customer_visits = {
                 str(name)[:24]: max(0, int(visits))
@@ -869,6 +991,16 @@ class GameState:
                 # Version 1 smoothies were generic. Preserve them as legacy
                 # stock that can be served without discarding player progress.
                 state.prepared_order = None
+            allowed_specials = {"premium_honey", "low_fat_milk"}
+            if not isinstance(state.prepared_specials, list):
+                state.prepared_specials = []
+            state.prepared_specials = [
+                key for key in state.prepared_specials if key in allowed_specials
+            ]
+            state.prepared_bonus = max(0, int(state.prepared_bonus))
+            if state.prepared_order is None:
+                state.prepared_specials = []
+                state.prepared_bonus = 0
             state._sync_customer_orders()
             state.plots = []
             for item in plot_data[:MAX_PLOTS]:

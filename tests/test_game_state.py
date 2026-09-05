@@ -21,6 +21,8 @@ from game_state import (  # noqa: E402
     GOLDEN_BLUEBERRY_PRICE,
     GROW_SECONDS,
     HARVEST_YIELD,
+    HONEY_FREE_ORDER_CHANCE,
+    HONEY_SINGLE_ORDER_CHANCE,
     LAND_BASE_COST,
     LAND_COST_STEP,
     LEGACY_GAME_DAY_SECONDS,
@@ -31,6 +33,7 @@ from game_state import (  # noqa: E402
     TREE_DROP_TABLE,
     VIP_TITLES,
     GameState,
+    honey_amount_for_roll,
     is_blueberry_festival,
     season_for_day,
     tree_drop_key_for_roll,
@@ -112,6 +115,19 @@ class GameStateTests(unittest.TestCase):
         light = CustomerOrder(blueberries=3, honey=0, milk=1, ice=1)
         loaded = CustomerOrder(blueberries=3, honey=2, milk=2, ice=3)
         self.assertGreater(loaded.price, light.price)
+
+    def test_honey_free_orders_are_reduced_to_fifteen_percent(self):
+        self.assertEqual(HONEY_FREE_ORDER_CHANCE, 0.15)
+        self.assertEqual(HONEY_SINGLE_ORDER_CHANCE, 0.55)
+        self.assertEqual(honey_amount_for_roll(0.00, day=1), 0)
+        self.assertEqual(honey_amount_for_roll(0.149999, day=1), 0)
+        self.assertEqual(honey_amount_for_roll(0.15, day=1), 1)
+        self.assertEqual(honey_amount_for_roll(0.699999, day=1), 1)
+        self.assertEqual(honey_amount_for_roll(0.70, day=1), 2)
+
+        winter_day = 1 + DAYS_PER_SEASON * 3
+        self.assertEqual(honey_amount_for_roll(0.00, day=winter_day), 1)
+        self.assertEqual(honey_amount_for_roll(0.99, day=winter_day), 2)
 
     def test_every_smoothie_sale_price_is_increased_by_twenty_percent(self):
         state = GameState.new(now=100.0)

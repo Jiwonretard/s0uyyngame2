@@ -102,6 +102,10 @@ LEGACY_CUSTOMER_NAME_MAP = {
 }
 VIP_TITLES = ("블루베리 연구가", "축제 심사위원", "유명 요리사", "마을 대표")
 REGULAR_RETURN_CHANCE = 0.35
+HONEY_FREE_ORDER_CHANCE = 0.15
+HONEY_SINGLE_ORDER_CHANCE = 0.55
+HONEY_DOUBLE_ORDER_START = 0.70
+WINTER_SINGLE_HONEY_CHANCE = 0.65
 
 
 def load_customer_names(path: Path = CUSTOMER_NAME_DATA_PATH) -> tuple[str, ...]:
@@ -215,6 +219,19 @@ def is_blueberry_festival(day: int) -> bool:
     return season == "여름" and day_in_season == DAYS_PER_SEASON
 
 
+def honey_amount_for_roll(roll: float, day: int = 1) -> int:
+    """Choose a honey amount while keeping honey-free orders uncommon."""
+    normalized = max(0.0, min(0.999999, float(roll)))
+    season, _day_in_season, _year = season_for_day(day)
+    if season == "겨울":
+        return 1 if normalized < WINTER_SINGLE_HONEY_CHANCE else 2
+    if normalized < HONEY_FREE_ORDER_CHANCE:
+        return 0
+    if normalized < HONEY_DOUBLE_ORDER_START:
+        return 1
+    return 2
+
+
 def daily_goal_for_day(day: int) -> dict[str, int | str]:
     if is_blueberry_festival(day):
         return {
@@ -276,10 +293,9 @@ class CustomerOrder:
         season, _day_in_season, _year = season_for_day(day)
         weather = weather_for_day(day)
         ice_min = 2 if season == "여름" or weather == "heat" else 1
-        honey_min = 1 if season == "겨울" else 0
         return cls(
             blueberries=3,
-            honey=picker.randint(honey_min, 2),
+            honey=honey_amount_for_roll(picker.random(), day),
             milk=picker.randint(1, 2),
             ice=picker.randint(ice_min, 3),
             customer_name=customer_name or picker.choice(CUSTOMER_NAMES),

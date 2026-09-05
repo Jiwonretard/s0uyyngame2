@@ -14,8 +14,9 @@ import time
 from typing import Callable
 
 
-SAVE_VERSION = 3
-GAME_DAY_SECONDS = 720.0
+SAVE_VERSION = 4
+LEGACY_GAME_DAY_SECONDS = 720.0
+GAME_DAY_SECONDS = 24.0 * 60.0
 STARTING_PLOTS = 4
 MAX_PLOTS = 12
 LAND_BASE_COST = 10_000
@@ -892,6 +893,10 @@ class GameState:
     def to_dict(self) -> dict:
         data = asdict(self)
         data["save_version"] = SAVE_VERSION
+        elapsed = max(0.0, float(self.game_elapsed_seconds))
+        data["calendar_day"] = self.current_day
+        data["day_progress"] = (elapsed % GAME_DAY_SECONDS) / GAME_DAY_SECONDS
+        data["day_length_seconds"] = GAME_DAY_SECONDS
         return data
 
     def save(self, path: str | Path) -> None:
@@ -919,13 +924,36 @@ class GameState:
         try:
             raw = json.loads(save_path.read_text(encoding="utf-8"))
             save_version = int(raw.get("save_version", 1))
-            if save_version not in (1, 2, SAVE_VERSION):
+            if save_version not in (1, 2, 3, SAVE_VERSION):
                 raise ValueError("지원하지 않는 저장 파일 버전입니다.")
             had_tracked_day = "tracked_day" in raw
+            saved_calendar_day = raw.pop("calendar_day", None)
+            saved_day_progress = raw.pop("day_progress", None)
+            saved_day_length = raw.pop("day_length_seconds", None)
             plot_data = raw.pop("plots")
             order_data = raw.pop("customer_orders", [])
             prepared_order_data = raw.pop("prepared_order", None)
             raw.pop("save_version", None)
+            raw_elapsed = max(0.0, float(raw.get("game_elapsed_seconds", 0.0)))
+            if saved_calendar_day is not None and saved_day_progress is not None:
+                calendar_day = max(1, int(saved_calendar_day))
+                day_progress = max(0.0, min(0.999999999, float(saved_day_progress)))
+            else:
+                previous_day_length = (
+                    max(1.0, float(saved_day_length))
+                    if saved_day_length is not None
+                    else LEGACY_GAME_DAY_SECONDS
+                )
+                elapsed_day = int(raw_elapsed // previous_day_length) + 1
+                tracked_day = max(1, int(raw.get("tracked_day", elapsed_day)))
+                # Older saves did not store the date explicitly. If their
+                # counters disagree, keep the later known day so loading can
+                # never move a player's calendar backwards.
+                calendar_day = max(elapsed_day, tracked_day)
+                day_progress = (raw_elapsed % previous_day_length) / previous_day_length
+            raw["game_elapsed_seconds"] = (
+                (calendar_day - 1) + day_progress
+            ) * GAME_DAY_SECONDS
             allowed = {field_name for field_name in cls.__dataclass_fields__}
             state = cls(**{key: value for key, value in raw.items() if key in allowed})
             state.active_plots = max(STARTING_PLOTS, min(MAX_PLOTS, int(state.active_plots)))
@@ -957,7 +985,10 @@ class GameState:
             ):
                 setattr(state, counter_name, max(0, int(getattr(state, counter_name))))
             if had_tracked_day:
-                state.tracked_day = max(1, int(state.tracked_day))
+                state.tracked_day = min(
+                    state.current_day,
+                    max(1, int(state.tracked_day)),
+                )
             else:
                 # Old saves did not have daily counters. Start tracking from
                 # their current day instead of inventing reports for past days.

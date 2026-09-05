@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import pygame  # noqa: E402
 import main  # noqa: E402
-from game_state import CustomerOrder, GOLDEN_BLUEBERRY_PRICE  # noqa: E402
+from game_state import CustomerOrder, GOLDEN_BLUEBERRY_PRICE, GameState  # noqa: E402
 
 
 class HarvestEventTests(unittest.TestCase):
@@ -235,6 +235,22 @@ class HarvestEventTests(unittest.TestCase):
         self.assertEqual(self.app.game_clock()[:3], (1, 14, 0))
         self.app.state.game_elapsed_seconds = main.DAY_SECONDS
         self.assertEqual(self.app.game_clock()[:3], (2, 6, 0))
+
+    def test_app_save_restores_exact_day_and_progress(self):
+        self.assertEqual(main.DAY_SECONDS, 24 * 60)
+        self.assertEqual(main.AUTOSAVE_SECONDS, 5.0)
+        self.app.state.game_elapsed_seconds = main.DAY_SECONDS * 3.4
+        self.app.state.tracked_day = 4
+
+        self.app.save()
+        loaded = GameState.load(main.SAVE_PATH)
+
+        self.assertEqual(loaded.current_day, 4)
+        self.assertEqual(loaded.tracked_day, 4)
+        self.assertAlmostEqual(
+            loaded.game_elapsed_seconds,
+            main.DAY_SECONDS * 3.4,
+        )
 
     def test_b_key_opens_four_by_four_bag_and_e_closes_it(self):
         self.app.state.blueberries = 17

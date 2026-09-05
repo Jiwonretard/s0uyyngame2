@@ -54,6 +54,7 @@ PLAYER_SPEED = 235.0
 DAY_SECONDS = GAME_DAY_SECONDS
 CUSTOMER_RETURN_SECONDS = 14.0
 BLENDER_DURATION = 3.0
+AUTOSAVE_SECONDS = 5.0
 BASE_DIR = Path(__file__).resolve().parent
 SAVE_PATH = BASE_DIR / "save_game.json"
 SALE_SOUND_PATH = BASE_DIR / "assets" / "smoothie_sale.wav"
@@ -772,7 +773,7 @@ class GameApp:
                 self.spawn_particles(
                     (CAFE.centerx, CAFE.bottom + 42), (192, 102, 186), 30
                 )
-        if time.time() - self.last_autosave > 10.0:
+        if time.time() - self.last_autosave > AUTOSAVE_SECONDS:
             self.save()
 
     def spawn_particles(self, point: tuple[float, float], color: tuple[int, int, int], count: int = 12) -> None:

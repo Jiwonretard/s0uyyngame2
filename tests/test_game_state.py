@@ -21,6 +21,7 @@ from game_state import (  # noqa: E402
     HARVEST_YIELD,
     LAND_BASE_COST,
     LAND_COST_STEP,
+    LEGACY_GAME_DAY_SECONDS,
     RAW_BERRY_PRICE,
     REGROW_SECONDS,
     SPECIAL_SMOOTHIE_BONUS,
@@ -46,6 +47,14 @@ class FixedRng:
 
 
 class GameStateTests(unittest.TestCase):
+    def test_game_day_is_twenty_four_minutes(self):
+        self.assertEqual(GAME_DAY_SECONDS, 24 * 60)
+        state = GameState.new(now=100.0)
+        state.game_elapsed_seconds = GAME_DAY_SECONDS - 0.001
+        self.assertEqual(state.current_day, 1)
+        state.game_elapsed_seconds = GAME_DAY_SECONDS
+        self.assertEqual(state.current_day, 2)
+
     def test_new_game_has_ready_bush_and_can_harvest(self):
         state = GameState.new(now=100.0)
         self.assertEqual((state.player_x, state.player_y), (360.0, 380.0))
@@ -452,6 +461,13 @@ class GameStateTests(unittest.TestCase):
             state.trees_shaken = 7
             state.plant(1, now=100.0)
             state.save(path)
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(saved["calendar_day"], 1)
+            self.assertEqual(saved["day_length_seconds"], GAME_DAY_SECONDS)
+            self.assertAlmostEqual(
+                saved["day_progress"],
+                state.game_elapsed_seconds / GAME_DAY_SECONDS,
+            )
             loaded = GameState.load(path, now=101.0)
             self.assertEqual(loaded.money, 123)
             self.assertEqual(loaded.blueberries, 9)
@@ -474,6 +490,8 @@ class GameStateTests(unittest.TestCase):
             state.smoothies = 2
             data = state.to_dict()
             data["save_version"] = 1
+            for key in ("calendar_day", "day_progress", "day_length_seconds"):
+                data.pop(key)
             data.pop("customer_orders")
             data.pop("prepared_order")
             path.write_text(json.dumps(data), encoding="utf-8")
@@ -503,9 +521,11 @@ class GameStateTests(unittest.TestCase):
             path = Path(directory) / "save.json"
             state = GameState.new(now=100.0)
             state.money = 654
-            state.game_elapsed_seconds = GAME_DAY_SECONDS * 8
+            state.game_elapsed_seconds = LEGACY_GAME_DAY_SECONDS * 8
             data = state.to_dict()
             data["save_version"] = 2
+            for key in ("calendar_day", "day_progress", "day_length_seconds"):
+                data.pop(key)
             for key in (
                 "reputation", "vip_customers_served", "customer_visits",
                 "tracked_day", "daily_berries_harvested",
@@ -527,6 +547,47 @@ class GameStateTests(unittest.TestCase):
             self.assertEqual(loaded.tracked_day, 9)
             self.assertIsNone(loaded.pending_daily_report)
             self.assertTrue(all(level == 0 for level in loaded.facility_levels.values()))
+
+    def test_version_three_save_keeps_calendar_day_when_day_length_changes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "save.json"
+            state = GameState.new(now=100.0)
+            data = state.to_dict()
+            data["save_version"] = 3
+            for key in ("calendar_day", "day_progress", "day_length_seconds"):
+                data.pop(key)
+            data["game_elapsed_seconds"] = LEGACY_GAME_DAY_SECONDS * 5.5
+            data["tracked_day"] = 6
+            path.write_text(json.dumps(data), encoding="utf-8")
+
+            loaded = GameState.load(path, now=101.0)
+
+            self.assertEqual(loaded.current_day, 6)
+            self.assertEqual(loaded.tracked_day, 6)
+            self.assertAlmostEqual(
+                loaded.game_elapsed_seconds,
+                GAME_DAY_SECONDS * 5.5,
+            )
+
+    def test_explicit_saved_calendar_repairs_inconsistent_elapsed_time(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "save.json"
+            state = GameState.new(now=100.0)
+            data = state.to_dict()
+            data["calendar_day"] = 12
+            data["day_progress"] = 0.75
+            data["game_elapsed_seconds"] = 0.0
+            data["tracked_day"] = 12
+            path.write_text(json.dumps(data), encoding="utf-8")
+
+            loaded = GameState.load(path, now=101.0)
+
+            self.assertEqual(loaded.current_day, 12)
+            self.assertEqual(loaded.tracked_day, 12)
+            self.assertAlmostEqual(
+                loaded.game_elapsed_seconds,
+                GAME_DAY_SECONDS * 11.75,
+            )
 
     def test_corrupt_save_falls_back_to_new_game(self):
         with tempfile.TemporaryDirectory() as directory:

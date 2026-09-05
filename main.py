@@ -41,6 +41,14 @@ from game_state import (
 
 SCREEN_W, SCREEN_H = 1280, 720
 WORLD_W, WORLD_H = 2200, 1500
+# Walkable grass around the original map gives edge scenery room to breathe.
+# It also lets the camera scroll above the HUD instead of pinning treetops
+# underneath it when the player visits the northern edge.
+WORLD_EDGE_MARGIN = 160
+WORLD_LEFT = -WORLD_EDGE_MARGIN
+WORLD_TOP = -WORLD_EDGE_MARGIN
+WORLD_RIGHT = WORLD_W + WORLD_EDGE_MARGIN
+WORLD_BOTTOM = WORLD_H + WORLD_EDGE_MARGIN
 FPS = 60
 PLAYER_SPEED = 235.0
 DAY_SECONDS = GAME_DAY_SECONDS
@@ -132,8 +140,8 @@ PLOT_RECTS = [
 ]
 
 TREE_POSITIONS = [
-    (80, 485), (115, 790), (90, 1110), (650, 105), (850, 125),
-    (1020, 120), (1450, 560), (2045, 265), (2080, 620),
+    (80, 485), (115, 790), (90, 1110), (650, 215), (850, 225),
+    (1020, 220), (1450, 560), (2045, 265), (2080, 620),
     (2040, 970), (2050, 1340), (1415, 1320), (890, 1250),
     (575, 1300), (245, 1320), (700, 1240),
 ]
@@ -315,8 +323,9 @@ class GameApp:
         flowers = []
         colors = [(255, 238, 130), (247, 177, 197), (217, 229, 255), (255, 255, 240)]
         rng = random.Random(43)
-        for _ in range(150):
-            x, y = rng.randint(35, WORLD_W - 35), rng.randint(35, WORLD_H - 35)
+        for _ in range(175):
+            x = rng.randint(WORLD_LEFT + 35, WORLD_RIGHT - 35)
+            y = rng.randint(WORLD_TOP + 35, WORLD_BOTTOM - 35)
             point = (x, y)
             blocked = any(
                 rect.inflate(60, 60).collidepoint(point)
@@ -522,8 +531,19 @@ class GameApp:
             self.player_sprite_error = str(exc)
 
     def _snap_camera(self) -> None:
-        self.camera.x = max(0, min(WORLD_W - SCREEN_W, self.player.x - SCREEN_W / 2))
-        self.camera.y = max(0, min(WORLD_H - SCREEN_H, self.player.y - SCREEN_H / 2))
+        self.camera.update(self._camera_target())
+
+    def _camera_target(self) -> pygame.Vector2:
+        return pygame.Vector2(
+            max(
+                WORLD_LEFT,
+                min(WORLD_RIGHT - SCREEN_W, self.player.x - SCREEN_W / 2),
+            ),
+            max(
+                WORLD_TOP,
+                min(WORLD_BOTTOM - SCREEN_H, self.player.y - SCREEN_H / 2),
+            ),
+        )
 
     def world_to_screen(self, point: tuple[float, float]) -> tuple[int, int]:
         return (
@@ -595,7 +615,12 @@ class GameApp:
 
     def _collides(self, x: float, y: float) -> bool:
         feet = self._feet_rect(x, y)
-        if feet.left < 8 or feet.right > WORLD_W - 8 or feet.top < 8 or feet.bottom > WORLD_H - 8:
+        if (
+            feet.left < WORLD_LEFT + 8
+            or feet.right > WORLD_RIGHT - 8
+            or feet.top < WORLD_TOP + 8
+            or feet.bottom > WORLD_BOTTOM - 8
+        ):
             return True
         return any(feet.colliderect(obstacle) for obstacle in self._obstacles())
 
@@ -637,10 +662,7 @@ class GameApp:
                 if report is not None:
                     self.overlay = "daily_report"
                     self.save()
-        target = pygame.Vector2(
-            max(0, min(WORLD_W - SCREEN_W, self.player.x - SCREEN_W / 2)),
-            max(0, min(WORLD_H - SCREEN_H, self.player.y - SCREEN_H / 2)),
-        )
+        target = self._camera_target()
         self.camera += (target - self.camera) * min(1.0, dt * 6.5)
         for particle in self.particles:
             particle.update(dt)

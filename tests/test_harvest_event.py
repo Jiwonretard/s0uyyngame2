@@ -70,6 +70,19 @@ class HarvestEventTests(unittest.TestCase):
         self.assertEqual(self.app.state.premium_honey, 1)
         self.assertEqual(self.app.state.trees_shaken, 1)
 
+    def test_northern_trees_are_fully_visible_below_hud_when_approached(self):
+        top_tree = main.TREE_POSITIONS[3]
+        self.app.player.update(*top_tree)
+        self.app._snap_camera()
+        _screen_x, screen_y = self.app.world_to_screen(top_tree)
+
+        # draw_tree reaches 104 pixels above its world anchor. The HUD ends
+        # around y=98, so leave a little visible gap instead of hiding foliage.
+        self.assertGreaterEqual(screen_y - 104, 105)
+        self.assertLess(self.app.camera.y, 0)
+        self.assertFalse(self.app._collides(0, 0))
+        self.app.draw()
+
     def test_physical_e_scancode_works_with_non_latin_input(self):
         before = self.app.state.blueberries
         event = pygame.event.Event(

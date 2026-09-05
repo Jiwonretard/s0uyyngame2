@@ -11,6 +11,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from game_state import (  # noqa: E402
     BAG_SLOT_COUNT,
     BAG_STACK_SIZE,
+    CUSTOMER_NAMES,
+    CUSTOMER_NAME_DATA_PATH,
     CUSTOMER_QUEUE_SIZE,
     CustomerOrder,
     DAYS_PER_SEASON,
@@ -26,6 +28,7 @@ from game_state import (  # noqa: E402
     REGROW_SECONDS,
     SPECIAL_SMOOTHIE_BONUS,
     TREE_DROP_TABLE,
+    VIP_TITLES,
     GameState,
     is_blueberry_festival,
     season_for_day,
@@ -108,6 +111,18 @@ class GameStateTests(unittest.TestCase):
         light = CustomerOrder(blueberries=3, honey=0, milk=1, ice=1)
         loaded = CustomerOrder(blueberries=3, honey=2, milk=2, ice=3)
         self.assertGreater(loaded.price, light.price)
+
+    def test_bundled_korean_names_are_large_and_current_queue_is_unique(self):
+        self.assertTrue(CUSTOMER_NAME_DATA_PATH.exists())
+        self.assertGreaterEqual(len(CUSTOMER_NAMES), 1_000)
+        self.assertEqual(len(CUSTOMER_NAMES), len(set(CUSTOMER_NAMES)))
+        self.assertTrue(all(len(name) >= 3 for name in CUSTOMER_NAMES))
+
+        state = GameState.new(now=100.0)
+        names = [order.customer_name for order in state.customer_orders]
+        self.assertEqual(len(names), CUSTOMER_QUEUE_SIZE)
+        self.assertEqual(len(names), len(set(names)))
+        self.assertTrue(all(name in CUSTOMER_NAMES for name in names))
 
     def test_blender_requires_the_front_customers_exact_amounts(self):
         state = GameState.new(now=100.0)
@@ -404,7 +419,16 @@ class GameStateTests(unittest.TestCase):
 
     def test_customer_patience_tips_regulars_and_vip_reputation(self):
         state = GameState.new(now=100.0)
-        order = CustomerOrder(3, 1, 1, 1, customer_name="민아", vip=True)
+        vip_name = CUSTOMER_NAMES[0]
+        order = CustomerOrder(
+            3,
+            1,
+            1,
+            1,
+            customer_name=vip_name,
+            vip=True,
+            vip_title=VIP_TITLES[0],
+        )
         state.customers_waiting = 1
         state.customer_orders = [order]
         fresh_price = state.smoothie_sale_price(order)
@@ -420,15 +444,32 @@ class GameStateTests(unittest.TestCase):
         ok, _ = state.sell_smoothie()
         self.assertTrue(ok)
         self.assertGreater(state.reputation, reputation_before)
-        self.assertEqual(state.customer_visits["민아"], 1)
+        self.assertEqual(state.customer_visits[vip_name], 1)
         self.assertEqual(state.vip_customers_served, 1)
 
-        state.customer_visits = {name: 1 for name in ("민아", "하늘", "도윤", "수빈", "유진", "지호", "나리", "태오")}
+        returning_name = CUSTOMER_NAMES[1]
+        state.customer_visits = {returning_name: 1}
         state.game_elapsed_seconds = 0
         state.reputation = 0
-        regular = state.make_customer_order(random.Random(11))
+        regular = state.make_customer_order(random.Random(4))
         self.assertTrue(regular.regular)
+        self.assertEqual(regular.customer_name, returning_name)
         self.assertIn("또 왔어요", regular.story)
+
+    def test_vip_has_korean_name_title_and_enhanced_reward(self):
+        festival_day = DAYS_PER_SEASON * 2
+        state = GameState.new(now=100.0)
+        state.game_elapsed_seconds = (festival_day - 1) * GAME_DAY_SECONDS
+
+        order = state.make_customer_order(random.Random(7))
+
+        self.assertTrue(order.vip)
+        self.assertIn(order.customer_name, CUSTOMER_NAMES)
+        self.assertIn(order.vip_title, VIP_TITLES)
+        self.assertIn(order.customer_name, order.customer_label)
+        self.assertIn(order.vip_title, order.customer_label)
+        regular_price = CustomerOrder(**order.recipe).price
+        self.assertGreater(order.price, regular_price)
 
     def test_customers_leave_the_queue_one_at_a_time(self):
         state = GameState.new(now=100.0)
@@ -451,8 +492,16 @@ class GameStateTests(unittest.TestCase):
             state.game_elapsed_seconds = 123.5
             state.customers_waiting = 2
             state.customer_orders = [
-                CustomerOrder(3, 0, 1, 2),
-                CustomerOrder(3, 2, 2, 3),
+                CustomerOrder(3, 0, 1, 2, customer_name=CUSTOMER_NAMES[0]),
+                CustomerOrder(
+                    3,
+                    2,
+                    2,
+                    3,
+                    customer_name=CUSTOMER_NAMES[1],
+                    vip=True,
+                    vip_title=VIP_TITLES[1],
+                ),
             ]
             state.golden_blueberries = 2
             state.premium_honey = 3
@@ -481,6 +530,33 @@ class GameStateTests(unittest.TestCase):
             self.assertEqual(loaded.low_fat_milk, 4)
             self.assertEqual(loaded.tree_shaken_days, {"1": 5})
             self.assertEqual(loaded.trees_shaken, 7)
+
+    def test_old_duplicate_names_migrate_without_breaking_prepared_order(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "save.json"
+            state = GameState.new(now=100.0)
+            state.customers_waiting = 3
+            state.customer_orders = [
+                CustomerOrder(3, 1, 1, 1, customer_name="민아"),
+                CustomerOrder(3, 2, 1, 2, customer_name="민아"),
+                CustomerOrder(3, 0, 2, 3, customer_name="마을 손님"),
+            ]
+            state.customer_visits = {"민아": 2}
+            state.prepared_order = CustomerOrder(
+                3, 1, 1, 1, customer_name="민아"
+            )
+            state.smoothies = 1
+            state.save(path)
+
+            loaded = GameState.load(path, now=101.0)
+            names = [order.customer_name for order in loaded.customer_orders]
+
+            self.assertEqual(len(names), len(set(names)))
+            self.assertTrue(all(name in CUSTOMER_NAMES for name in names))
+            self.assertIn("김민아", loaded.customer_visits)
+            self.assertEqual(loaded.prepared_order, loaded.current_order)
+            ok, _message = loaded.sell_smoothie()
+            self.assertTrue(ok)
 
     def test_version_one_save_keeps_progress_and_gains_customer_orders(self):
         with tempfile.TemporaryDirectory() as directory:

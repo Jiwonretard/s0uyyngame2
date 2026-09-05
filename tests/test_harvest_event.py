@@ -385,6 +385,31 @@ class HarvestEventTests(unittest.TestCase):
 
         self.app.draw()
 
+    def test_queue_name_tags_and_vip_title_are_visible(self):
+        regular = CustomerOrder(
+            3, 1, 1, 1, customer_name="김서연", regular=True
+        )
+        vip = CustomerOrder(
+            3,
+            2,
+            2,
+            2,
+            customer_name="박도윤",
+            vip=True,
+            vip_title="유명 요리사",
+        )
+
+        with patch.object(self.app, "text", wraps=self.app.text) as draw_text:
+            self.app.draw_customer((600, 700), 0, order=regular, front=False)
+            self.app.draw_customer((700, 700), 1, order=vip, front=True)
+
+        labels = [call.args[0] for call in draw_text.call_args_list]
+        self.assertIn("김서연", labels)
+        self.assertTrue(
+            any("VIP" in label and "유명 요리사" in label and "박도윤" in label
+                for label in labels)
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

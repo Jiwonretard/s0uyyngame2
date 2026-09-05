@@ -1555,6 +1555,22 @@ class GameApp:
                  (x + 5, y - 106), (x + 16, y - 92)],
             )
             pygame.draw.rect(self.screen, (183, 116, 34), (x - 18, y - 94, 34, 6))
+        elif order is not None and order.regular and not departing:
+            pygame.draw.circle(self.screen, BLUEBERRY, (x + 23, y - 91), 9)
+            pygame.draw.circle(self.screen, (223, 195, 244), (x + 23, y - 91), 5)
+
+        if order is not None and not front and not departing:
+            name = order.customer_name
+            name_width = max(58, self.fonts[13].size(name)[0] + 16)
+            name_tag = pygame.Rect(x - name_width // 2, y - 135, name_width, 24)
+            tag_color = (
+                (255, 229, 145) if order.vip
+                else (232, 211, 248) if order.regular
+                else (255, 247, 218)
+            )
+            rounded_rect(self.screen, name_tag, tag_color, 8, WOOD_DARK, 2)
+            self.text(name, 13, BLUEBERRY_DARK, name_tag.centerx, name_tag.centery,
+                      center=True)
 
         if front and order is not None and not departing:
             bubble = pygame.Rect(x - 149, y - 204, 298, 96)
@@ -1572,7 +1588,13 @@ class GameApp:
                 [(x - 10, bubble.bottom), (x, bubble.bottom + 14), (x + 8, bubble.bottom)],
                 3,
             )
-            customer_title = f"{'VIP · ' if order.vip else ''}{order.customer_name}님의 주문"
+            if order.vip:
+                vip_role = f" · {order.vip_title}" if order.vip_title else ""
+                customer_title = f"VIP{vip_role} · {order.customer_name}님의 주문"
+            elif order.regular:
+                customer_title = f"단골 · {order.customer_name}님의 주문"
+            else:
+                customer_title = f"{order.customer_name}님의 주문"
             self.text(customer_title, 13, BLUEBERRY_DARK, bubble.centerx, bubble.y + 17,
                       center=True)
             self.text(
@@ -2214,8 +2236,13 @@ class GameApp:
         ticket = pygame.Rect(280, 143, 730, 100)
         rounded_rect(self.screen, ticket, (255, 247, 211), 12, WOOD_DARK, 3)
         if order is not None:
-            customer_type = "VIP" if order.vip else ("단골" if order.regular else "손님")
-            self.text(f"{order.customer_name} {customer_type}의 주문표 · 만족도 {order.satisfaction}%",
+            customer_type = (
+                f"VIP · {order.vip_title}" if order.vip and order.vip_title
+                else "VIP" if order.vip
+                else "단골" if order.regular
+                else "손님"
+            )
+            self.text(f"{order.customer_name} · {customer_type} 주문표 · 만족도 {order.satisfaction}%",
                       15, BLUEBERRY_DARK, ticket.centerx, ticket.y + 17, center=True)
             self.text(f"“{order.story}”", 13, MUTED,
                       ticket.centerx, ticket.y + 38, center=True)

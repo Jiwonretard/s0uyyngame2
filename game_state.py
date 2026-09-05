@@ -82,8 +82,53 @@ FACILITY_CONFIG = {
     },
 }
 
-CUSTOMER_NAMES = ("민아", "하늘", "도윤", "수빈", "유진", "지호", "나리", "태오")
-VIP_NAMES = ("블루베리 연구가", "축제 심사위원", "유명 요리사", "마을 대표")
+CUSTOMER_NAME_DATA_PATH = (
+    Path(__file__).resolve().parent / "assets" / "korean_customer_names.json"
+)
+FALLBACK_SURNAMES = ("김", "이", "박", "최", "정", "강", "조", "윤")
+FALLBACK_GIVEN_NAMES = (
+    "서준", "민준", "도윤", "시우", "주원", "지호", "서연", "지우",
+    "하윤", "민서", "수빈", "유진", "민아", "하늘", "나리", "태오",
+)
+LEGACY_CUSTOMER_NAME_MAP = {
+    "민아": "김민아",
+    "하늘": "이하늘",
+    "도윤": "박도윤",
+    "수빈": "최수빈",
+    "유진": "정유진",
+    "지호": "강지호",
+    "나리": "조나리",
+    "태오": "윤태오",
+}
+VIP_TITLES = ("블루베리 연구가", "축제 심사위원", "유명 요리사", "마을 대표")
+REGULAR_RETURN_CHANCE = 0.35
+
+
+def load_customer_names(path: Path = CUSTOMER_NAME_DATA_PATH) -> tuple[str, ...]:
+    """Build fictional full names from the bundled Korean name component data."""
+    surnames = FALLBACK_SURNAMES
+    given_names = FALLBACK_GIVEN_NAMES
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        loaded_surnames = tuple(
+            str(value).strip() for value in raw.get("surnames", []) if str(value).strip()
+        )
+        loaded_given_names = tuple(
+            str(value).strip() for value in raw.get("given_names", []) if str(value).strip()
+        )
+        if loaded_surnames and loaded_given_names:
+            surnames = loaded_surnames
+            given_names = loaded_given_names
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        pass
+    return tuple(dict.fromkeys(
+        f"{surname}{given_name}"
+        for surname in surnames
+        for given_name in given_names
+    ))
+
+
+CUSTOMER_NAMES = load_customer_names()
 CUSTOMER_STORIES = (
     "농장 산책 뒤 마시는 스무디가 최고예요.",
     "오늘은 달콤하고 시원하게 부탁해요!",
@@ -211,6 +256,7 @@ class CustomerOrder:
     customer_name: str = "마을 손님"
     vip: bool = False
     regular: bool = False
+    vip_title: str = ""
     story: str = "싱싱한 스무디를 부탁해요."
     wait_seconds: float = field(default=0.0, compare=False)
 
@@ -221,6 +267,8 @@ class CustomerOrder:
         *,
         day: int = 1,
         vip: bool = False,
+        customer_name: str | None = None,
+        vip_title: str = "",
     ) -> "CustomerOrder":
         picker = rng if rng is not None else random
         season, _day_in_season, _year = season_for_day(day)
@@ -232,8 +280,9 @@ class CustomerOrder:
             honey=picker.randint(honey_min, 2),
             milk=picker.randint(1, 2),
             ice=picker.randint(ice_min, 3),
-            customer_name=picker.choice(VIP_NAMES if vip else CUSTOMER_NAMES),
+            customer_name=customer_name or picker.choice(CUSTOMER_NAMES),
             vip=vip,
+            vip_title=vip_title if vip else "",
             story=picker.choice(VIP_STORIES if vip else CUSTOMER_STORIES),
         )
 
@@ -247,6 +296,7 @@ class CustomerOrder:
             customer_name=str(data.get("customer_name", "마을 손님"))[:24],
             vip=bool(data.get("vip", False)),
             regular=bool(data.get("regular", False)),
+            vip_title=str(data.get("vip_title", ""))[:24],
             story=str(data.get("story", "싱싱한 스무디를 부탁해요."))[:60],
             wait_seconds=max(0.0, float(data.get("wait_seconds", 0.0))),
         )
@@ -270,6 +320,12 @@ class CustomerOrder:
 
     def short_text(self) -> str:
         return f"블루베리 {self.blueberries} · 꿀 {self.honey} · 우유 {self.milk} · 얼음 {self.ice}"
+
+    @property
+    def customer_label(self) -> str:
+        if self.vip and self.vip_title:
+            return f"{self.vip_title} {self.customer_name}"
+        return self.customer_name
 
     @property
     def satisfaction(self) -> int:
@@ -351,9 +407,8 @@ class GameState:
         current = time.time() if now is None else now
         state = cls(started_at=current)
         state.plots[0] = Plot(planted=True, ready_at=current, cycle_seconds=GROW_SECONDS)
-        state.customer_orders = [
-            state.make_customer_order() for _ in range(CUSTOMER_QUEUE_SIZE)
-        ]
+        state.customer_orders = []
+        state._sync_customer_orders()
         return state
 
     @property
@@ -392,14 +447,35 @@ class GameState:
     def make_customer_order(
         self,
         rng: random.Random | None = None,
+        *,
+        exclude_names: set[str] | None = None,
     ) -> CustomerOrder:
         picker = rng if rng is not None else random
+        excluded = exclude_names or set()
         vip_chance = 0.0
         if self.farm_rank >= 2:
             vip_chance = 0.22 + (self.farm_rank - 2) * 0.07
         vip = is_blueberry_festival(self.current_day) or picker.random() < vip_chance
-        order = CustomerOrder.random(picker, day=self.current_day, vip=vip)
-        order.regular = self.customer_visits.get(order.customer_name, 0) > 0
+        returning_names = [
+            name
+            for name, visits in self.customer_visits.items()
+            if visits > 0 and name in CUSTOMER_NAMES and name not in excluded
+        ]
+        returning = bool(returning_names) and picker.random() < REGULAR_RETURN_CHANCE
+        if returning:
+            customer_name = picker.choice(returning_names)
+        else:
+            available_names = [name for name in CUSTOMER_NAMES if name not in excluded]
+            customer_name = picker.choice(available_names or list(CUSTOMER_NAMES))
+        vip_title = picker.choice(VIP_TITLES) if vip else ""
+        order = CustomerOrder.random(
+            picker,
+            day=self.current_day,
+            vip=vip,
+            customer_name=customer_name,
+            vip_title=vip_title,
+        )
+        order.regular = returning or self.customer_visits.get(order.customer_name, 0) > 0
         if order.regular:
             order.story = "또 왔어요! 지난번처럼 맛있게 만들어 주세요."
         return order
@@ -658,13 +734,54 @@ class GameState:
         self.facility_ready_days[key] = selected_day + 1
         return True, f"{config['name']}에서 {config['product_name']} {amount}개를 받았어요!"
 
+    def _normalize_customer_identities(self) -> None:
+        """Upgrade legacy/duplicate queue names without changing their orders."""
+        migrated_visits: dict[str, int] = {}
+        for name, visits in self.customer_visits.items():
+            migrated_name = LEGACY_CUSTOMER_NAME_MAP.get(name, name)
+            migrated_visits[migrated_name] = (
+                migrated_visits.get(migrated_name, 0) + max(0, int(visits))
+            )
+        self.customer_visits = migrated_visits
+
+        used_names: set[str] = set()
+        for index, order in enumerate(self.customer_orders):
+            if order.vip and order.customer_name in VIP_TITLES:
+                order.vip_title = order.customer_name
+                order.customer_name = "마을 손님"
+            order.customer_name = LEGACY_CUSTOMER_NAME_MAP.get(
+                order.customer_name,
+                order.customer_name,
+            )
+            needs_new_name = (
+                order.customer_name == "마을 손님"
+                or order.customer_name in used_names
+                or order.customer_name not in CUSTOMER_NAMES
+            )
+            if needs_new_name:
+                start = (self.current_day * 37 + index * 53) % len(CUSTOMER_NAMES)
+                for offset in range(len(CUSTOMER_NAMES)):
+                    candidate = CUSTOMER_NAMES[(start + offset) % len(CUSTOMER_NAMES)]
+                    if candidate not in used_names:
+                        order.customer_name = candidate
+                        break
+            if order.vip and not order.vip_title:
+                order.vip_title = VIP_TITLES[index % len(VIP_TITLES)]
+            if not order.vip:
+                order.vip_title = ""
+            order.regular = self.customer_visits.get(order.customer_name, 0) > 0
+            used_names.add(order.customer_name)
+
     def _sync_customer_orders(self) -> None:
         self.customers_waiting = max(
             0, min(CUSTOMER_QUEUE_SIZE, int(self.customers_waiting))
         )
         self.customer_orders = self.customer_orders[:self.customers_waiting]
+        used_names = {order.customer_name for order in self.customer_orders}
         while len(self.customer_orders) < self.customers_waiting:
-            self.customer_orders.append(self.make_customer_order())
+            order = self.make_customer_order(exclude_names=used_names)
+            self.customer_orders.append(order)
+            used_names.add(order.customer_name)
 
     @property
     def current_order(self) -> CustomerOrder | None:
@@ -680,7 +797,10 @@ class GameState:
         self._sync_customer_orders()
         if self.customers_waiting >= CUSTOMER_QUEUE_SIZE:
             return False
-        self.customer_orders.append(order or self.make_customer_order(rng))
+        if order is None:
+            used_names = {current.customer_name for current in self.customer_orders}
+            order = self.make_customer_order(rng, exclude_names=used_names)
+        self.customer_orders.append(order)
         self.customers_waiting += 1
         return True
 
@@ -833,6 +953,7 @@ class GameState:
             customer_name=order.customer_name,
             vip=order.vip,
             regular=order.regular,
+            vip_title=order.vip_title,
             story=order.story,
             wait_seconds=order.wait_seconds,
         )
@@ -872,7 +993,12 @@ class GameState:
         self.prepared_order = None
         self.prepared_bonus = 0
         self.prepared_specials = []
-        customer_type = "VIP" if order.vip else ("단골" if order.regular else "손님")
+        customer_type = (
+            f"VIP · {order.vip_title}" if order.vip and order.vip_title
+            else "VIP" if order.vip
+            else "단골" if order.regular
+            else "손님"
+        )
         return True, (
             f"{order.customer_name} {customer_type} 만족도 {order.satisfaction}%! "
             f"{sale_price}코인 · 평판 +{reputation_gain}"
@@ -1033,7 +1159,19 @@ class GameState:
             if state.prepared_order is None:
                 state.prepared_specials = []
                 state.prepared_bonus = 0
+            state._normalize_customer_identities()
             state._sync_customer_orders()
+            # A smoothie can only be prepared for the first customer. When an
+            # old save upgrades a short/duplicate name, keep that prepared
+            # smoothie paired with the migrated customer instead of rejecting
+            # it as somebody else's order.
+            if state.prepared_order is not None and state.customer_orders:
+                front_order = state.customer_orders[0]
+                state.prepared_order.customer_name = front_order.customer_name
+                state.prepared_order.vip = front_order.vip
+                state.prepared_order.regular = front_order.regular
+                state.prepared_order.vip_title = front_order.vip_title
+                state.prepared_order.story = front_order.story
             state.plots = []
             for item in plot_data[:MAX_PLOTS]:
                 state.plots.append(

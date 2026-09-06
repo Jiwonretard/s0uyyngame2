@@ -18,6 +18,7 @@ from game_state import (  # noqa: E402
     DAYS_PER_SEASON,
     FACILITY_CONFIG,
     FISHING_ROD_COST,
+    FISHING_ROD_MAX_DURABILITY,
     FISH_PRICES,
     FURNITURE_COSTS,
     GAME_DAY_SECONDS,
@@ -123,6 +124,7 @@ class GameStateTests(unittest.TestCase):
         ok, _ = state.buy_fishing_rod()
         self.assertTrue(ok)
         self.assertEqual(state.money, sum(FURNITURE_COSTS.values()))
+        self.assertEqual(state.fishing_rod_durability, FISHING_ROD_MAX_DURABILITY)
 
         expected_fish = (
             (0.00, "carp"),
@@ -152,10 +154,52 @@ class GameStateTests(unittest.TestCase):
             state.save(path)
             loaded = GameState.load(path)
         self.assertEqual(loaded.fishing_rod, 1)
+        self.assertEqual(
+            loaded.fishing_rod_durability,
+            FISHING_ROD_MAX_DURABILITY,
+        )
         self.assertEqual(loaded.carp, 1)
         self.assertEqual(loaded.crucian_carp, 1)
         self.assertEqual(loaded.bass, 1)
         self.assertEqual(loaded.furniture_owned, list(FURNITURE_COSTS))
+
+    def test_fishing_rod_breaks_exactly_on_the_fortieth_cast(self):
+        state = GameState.new(now=100.0)
+        state.money = FISHING_ROD_COST
+        ok, _ = state.buy_fishing_rod()
+        self.assertTrue(ok)
+
+        for cast_number in range(1, FISHING_ROD_MAX_DURABILITY + 1):
+            ok, message, broke = state.use_fishing_rod()
+            self.assertTrue(ok)
+            self.assertEqual(
+                state.fishing_rod_durability,
+                FISHING_ROD_MAX_DURABILITY - cast_number,
+            )
+            self.assertEqual(broke, cast_number == FISHING_ROD_MAX_DURABILITY)
+        self.assertEqual(state.fishing_rod, 0)
+        self.assertIn("부서", message)
+
+        ok, _message, broke = state.use_fishing_rod()
+        self.assertFalse(ok)
+        self.assertFalse(broke)
+
+    def test_old_save_with_fishing_rod_receives_full_durability(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "save.json"
+            state = GameState.new(now=100.0)
+            data = state.to_dict()
+            data["fishing_rod"] = 1
+            data.pop("fishing_rod_durability")
+            path.write_text(json.dumps(data), encoding="utf-8")
+
+            loaded = GameState.load(path)
+
+        self.assertEqual(loaded.fishing_rod, 1)
+        self.assertEqual(
+            loaded.fishing_rod_durability,
+            FISHING_ROD_MAX_DURABILITY,
+        )
 
     def test_complete_smoothie_economy_loop(self):
         state = GameState.new(now=100.0)

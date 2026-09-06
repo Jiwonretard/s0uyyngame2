@@ -500,6 +500,10 @@ class HarvestEventTests(unittest.TestCase):
 
         self.app.interact()
         self.assertEqual(self.app.fishing_phase, "waiting")
+        self.assertEqual(
+            self.app.state.fishing_rod_durability,
+            main.FISHING_ROD_MAX_DURABILITY - 1,
+        )
         self.app.fishing_phase = "bite"
         self.app.interact()
 
@@ -516,6 +520,27 @@ class HarvestEventTests(unittest.TestCase):
         self.app.handle_key(sale_event)
         self.assertEqual(self.app.state.carp, 0)
         self.app.draw()
+
+    def test_final_fishing_rod_cast_can_land_a_fish_after_the_rod_breaks(self):
+        self.app.state.fishing_rod = 1
+        self.app.state.fishing_rod_durability = 1
+        self.app.player.update(main.POND.left - 25, main.POND.centery)
+        controlled_rng = Mock()
+        controlled_rng.uniform.side_effect = lambda start, end: (start + end) / 2
+        controlled_rng.random.return_value = 0.01
+        controlled_rng.randint.side_effect = lambda start, end: (start + end) // 2
+        self.app.rng = controlled_rng
+
+        self.app.interact()
+        self.assertEqual(self.app.fishing_phase, "waiting")
+        self.assertEqual(self.app.state.fishing_rod, 0)
+        self.assertEqual(self.app.state.fishing_rod_durability, 0)
+
+        self.app.fishing_phase = "bite"
+        self.app.interact()
+
+        self.assertEqual(self.app.fishing_phase, "idle")
+        self.assertEqual(self.app.state.carp, 1)
 
     def test_farmhouse_furniture_shop_places_one_design_of_each_item(self):
         self.app.state.money = sum(main.FURNITURE_COSTS.values())

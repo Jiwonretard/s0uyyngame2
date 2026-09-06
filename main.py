@@ -27,6 +27,7 @@ from game_state import (
     FACILITY_CONFIG,
     FACILITY_KEYS,
     FISHING_ROD_COST,
+    FISHING_ROD_MAX_DURABILITY,
     FISH_PRICES,
     FURNITURE_COSTS,
     FURNITURE_LABELS,
@@ -1169,14 +1170,18 @@ class GameApp:
                 max(POND.left, min(position[0], POND.right)),
                 max(POND.top, min(position[1], POND.bottom)),
             )
-            if not self.state.fishing_rod:
-                fishing_prompt = "낚시하려면 상점에서 낚싯대 구입"
-            elif self.fishing_phase == "bite":
+            if self.fishing_phase == "bite":
                 fishing_prompt = "입질! 지금 E로 낚아 올리기"
             elif self.fishing_phase == "waiting":
                 fishing_prompt = "찌를 지켜보는 중 · 입질을 기다리세요"
+            elif not self.state.fishing_rod:
+                fishing_prompt = "낚시하려면 상점에서 낚싯대 구입"
             else:
-                fishing_prompt = "낚싯대 던지기"
+                fishing_prompt = (
+                    "낚싯대 던지기 · "
+                    f"내구도 {self.state.fishing_rod_durability}/"
+                    f"{FISHING_ROD_MAX_DURABILITY}"
+                )
             candidates.append((pond_gap, {
                 "kind": "fishing",
                 "prompt": fishing_prompt,
@@ -1374,11 +1379,15 @@ class GameApp:
             self.save()
 
     def use_fishing(self, pond_edge: tuple[float, float]) -> None:
-        if not self.state.fishing_rod:
+        if self.fishing_phase == "idle" and not self.state.fishing_rod:
             self.notify("낚싯대가 없어요. 상점에서 2,000코인에 구입하세요.", True)
             return
         now = time.time()
         if self.fishing_phase == "idle":
+            ok, durability_message, broke = self.state.use_fishing_rod()
+            if not ok:
+                self.notify(durability_message, True)
+                return
             edge_x, edge_y = pond_edge
             if edge_x <= POND.left:
                 self.fishing_bobber = (POND.left + 55, max(POND.top + 35, min(edge_y, POND.bottom - 35)))
@@ -1393,14 +1402,24 @@ class GameApp:
                 wait *= 0.7
             self.fishing_phase = "waiting"
             self.fishing_bite_at = now + wait
-            self.notify("찌를 던졌어요. 물속으로 잠길 때 E를 누르세요.")
+            if broke:
+                self.notify("마지막 찌를 던졌고 낚싯대가 부서졌어요. 이번 입질은 잡을 수 있어요!", True)
+            else:
+                self.notify(
+                    "찌를 던졌어요. 물속으로 잠길 때 E를 누르세요. · "
+                    + durability_message
+                )
+            self.save()
             return
         if self.fishing_phase == "waiting":
             self.fishing_phase = "idle"
             self.notify("너무 일찍 감았어요. 물고기가 다가올 때까지 기다리세요.", True)
             return
 
-        ok, message, fish_key = self.state.catch_fish(self.rng)
+        ok, message, fish_key = self.state.catch_fish(
+            self.rng,
+            active_cast=True,
+        )
         self.fishing_phase = "idle"
         self.notify(message, not ok)
         if ok and fish_key is not None:
@@ -2874,7 +2893,11 @@ class GameApp:
                 text_center_x += 25
             self.text(f"[{index}] {label} 1개", 18, WHITE,
                       text_center_x, rect.y + 24, center=True)
-            status = "구매 완료" if already_owned else f"{price:,}코인 · 보유 {amounts[key]}"
+            status = (
+                f"내구도 {self.state.fishing_rod_durability}/{FISHING_ROD_MAX_DURABILITY}"
+                if already_owned
+                else f"{price:,}코인 · 보유 {amounts[key]}"
+            )
             self.text(status, 14, WHITE,
                       text_center_x, rect.y + 53, center=True)
         rounded_rect(self.screen, SHOP_FISH_BUTTON, WATER, 10, WOOD_DARK, 4)
@@ -3513,7 +3536,13 @@ class GameApp:
             self.text(BAG_ITEM_LABELS[key], label_size, INK, rect.x + 65, rect.y + 24)
             badge = pygame.Rect(rect.x + 68, rect.y + 49, 48, 29)
             rounded_rect(self.screen, badge, BLUEBERRY_DARK, 8)
-            self.text(f"×{amount}", 16, WHITE, badge.centerx, badge.centery, center=True)
+            badge_text = (
+                f"{self.state.fishing_rod_durability}/{FISHING_ROD_MAX_DURABILITY}"
+                if key == "fishing_rod"
+                else f"×{amount}"
+            )
+            self.text(badge_text, 14 if key == "fishing_rod" else 16,
+                      WHITE, badge.centerx, badge.centery, center=True)
 
         if used > BAG_SLOT_COUNT:
             self.text(
@@ -3547,7 +3576,7 @@ class GameApp:
         rows = [
             ("이동·메뉴", "WASD · B 가방 · H 도움말", "한글 입력 상태에서도 물리 키로 메뉴를 열 수 있어요."),
             ("농사·비료", "밭 E · 자랄 때 F", "수확 뒤 60초 재성장, 비료를 주면 유기농 열매를 얻어요."),
-            ("낚시", "상점 낚싯대 → 연못 E", "찌가 잠기는 짧은 순간 다시 E를 눌러 물고기를 잡아요."),
+            ("낚시", "상점 낚싯대 → 연못 E", "찌를 던질 때 내구도 1이 줄고 40번째 사용 뒤 부서져요."),
             ("집·가구", "농장집 문 앞 E", "집에 들어가 침대·서랍·책상·랜턴·화분을 구입해 꾸며요."),
             ("제조·판매", "블렌더 E → +/- · 5/6", "주문 재료를 맞추면 3초 동안 소리와 함께 직접 갈아요."),
             ("낮·밤·가로등", "하루 24분 · 부지 E", "지정된 5곳의 가로등은 저녁부터 새벽까지 자동으로 켜져요."),

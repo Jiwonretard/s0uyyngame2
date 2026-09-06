@@ -189,6 +189,7 @@ RAW_BERRY_PRICE = 3
 ORGANIC_BLUEBERRY_PRICE = 8
 GOLDEN_BLUEBERRY_PRICE = 200
 FISHING_ROD_COST = 2_000
+FISHING_ROD_MAX_DURABILITY = 40
 FISH_PRICES = {
     "carp": 80,
     "crucian_carp": 65,
@@ -431,6 +432,7 @@ class GameState:
     premium_honey: int = 0
     low_fat_milk: int = 0
     fishing_rod: int = 0
+    fishing_rod_durability: int = 0
     carp: int = 0
     crucian_carp: int = 0
     bass: int = 0
@@ -978,10 +980,33 @@ class GameState:
         self.money -= FISHING_ROD_COST
         self.daily_money_spent += FISHING_ROD_COST
         self.fishing_rod = 1
-        return True, "낚싯대를 샀어요! 연못가에서 E로 낚시할 수 있어요."
+        self.fishing_rod_durability = FISHING_ROD_MAX_DURABILITY
+        return True, (
+            f"낚싯대를 샀어요! 내구도는 {FISHING_ROD_MAX_DURABILITY}이고 "
+            "연못가에서 E로 낚시할 수 있어요."
+        )
 
-    def catch_fish(self, rng: random.Random | None = None) -> tuple[bool, str, str | None]:
-        if not self.fishing_rod:
+    def use_fishing_rod(self) -> tuple[bool, str, bool]:
+        """Consume one cast of durability and report whether the rod broke."""
+        if not self.fishing_rod or self.fishing_rod_durability <= 0:
+            self.fishing_rod = 0
+            self.fishing_rod_durability = 0
+            return False, "낚싯대가 없어요. 상점에서 먼저 구입해 주세요.", False
+        self.fishing_rod_durability -= 1
+        broke = self.fishing_rod_durability <= 0
+        if broke:
+            self.fishing_rod = 0
+            self.fishing_rod_durability = 0
+            return True, "40번째 찌를 던져 낚싯대가 부서졌어요!", True
+        return True, f"낚싯대 내구도 {self.fishing_rod_durability}/{FISHING_ROD_MAX_DURABILITY}", False
+
+    def catch_fish(
+        self,
+        rng: random.Random | None = None,
+        *,
+        active_cast: bool = False,
+    ) -> tuple[bool, str, str | None]:
+        if not self.fishing_rod and not active_cast:
             return False, "낚싯대가 없어요. 상점에서 먼저 구입해 주세요.", None
         picker = rng if rng is not None else random
         roll = picker.random()
@@ -1255,6 +1280,7 @@ class GameState:
                 (calendar_day - 1) + day_progress
             ) * GAME_DAY_SECONDS
             allowed = {field_name for field_name in cls.__dataclass_fields__}
+            had_rod_durability = "fishing_rod_durability" in raw
             state = cls(**{key: value for key, value in raw.items() if key in allowed})
             state.active_plots = max(STARTING_PLOTS, min(MAX_PLOTS, int(state.active_plots)))
             state.game_elapsed_seconds = max(0.0, float(state.game_elapsed_seconds))
@@ -1267,6 +1293,22 @@ class GameState:
             state.premium_honey = max(0, int(state.premium_honey))
             state.low_fat_milk = max(0, int(state.low_fat_milk))
             state.fishing_rod = 1 if state.fishing_rod else 0
+            if state.fishing_rod:
+                if had_rod_durability:
+                    state.fishing_rod_durability = max(
+                        0,
+                        min(
+                            FISHING_ROD_MAX_DURABILITY,
+                            int(state.fishing_rod_durability),
+                        ),
+                    )
+                else:
+                    # Rods from older saves begin with full durability.
+                    state.fishing_rod_durability = FISHING_ROD_MAX_DURABILITY
+                if state.fishing_rod_durability <= 0:
+                    state.fishing_rod = 0
+            else:
+                state.fishing_rod_durability = 0
             for fish_key in FISH_PRICES:
                 setattr(state, fish_key, max(0, int(getattr(state, fish_key))))
             state.fish_caught = max(0, int(state.fish_caught))

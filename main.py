@@ -194,7 +194,7 @@ TREE_POSITIONS = [
     (-70, 250), (-80, 760), (-60, 1260),
     (650, 60), (970, 50), (1290, 60),
     (1450, 560), (2160, 190), (2180, 650),
-    (2150, 1040), (2160, 1450), (1420, 1420),
+    (2150, 1040), (2180, 1580), (1420, 1420),
     (1080, 1390), (700, 1420), (320, 1380),
 ]
 
@@ -202,7 +202,16 @@ FISH_KEYS = tuple(FISH_PRICES)
 FURNITURE_KEYS = tuple(FURNITURE_COSTS)
 SHOP_CLOSE_RECT = pygame.Rect(765, 578, 190, 48)
 SHOP_FISH_BUTTON = pygame.Rect(325, 578, 260, 48)
-HUD_HELP_RECT = pygame.Rect(1193, 15, 66, 25)
+HUD_LEFT_RECT = pygame.Rect(53, 8, 360, 52)
+HUD_OBJECTIVE_RECT = pygame.Rect(425, 8, 400, 52)
+HUD_STATUS_RECT = pygame.Rect(837, 8, 390, 52)
+HUD_HELP_RECT = pygame.Rect(1150, 12, 68, 22)
+HUD_STAT_RECTS = (
+    pygame.Rect(174, 10, 78, 42),
+    pygame.Rect(254, 10, 50, 42),
+    pygame.Rect(306, 10, 50, 42),
+    pygame.Rect(358, 10, 55, 42),
+)
 HOME_BUILD_AREA = pygame.Rect(80, 155, 1120, 320)
 HOME_GRID_CELL = HOME_BUILD_AREA.width // FURNITURE_GRID_COLUMNS
 HOME_EDIT_BUTTON = pygame.Rect(865, 96, 160, 42)
@@ -260,6 +269,39 @@ def distance_to_rect(point: tuple[float, float], rect: pygame.Rect) -> float:
     closest_x = max(rect.left, min(point[0], rect.right))
     closest_y = max(rect.top, min(point[1], rect.bottom))
     return distance(point, (closest_x, closest_y))
+
+
+def compact_hud_number(value: int) -> str:
+    """Keep large inventory amounts readable inside the compact top menu."""
+    number = int(value)
+    absolute = abs(number)
+    if absolute < 10_000:
+        return f"{number:,}"
+    for divisor, suffix in (
+        (10_000_000_000_000_000, "경"),
+        (1_000_000_000_000, "조"),
+        (100_000_000, "억"),
+        (10_000, "만"),
+    ):
+        if absolute >= divisor:
+            scaled = number / divisor
+            decimals = 1 if abs(scaled) < 100 else 0
+            rendered = f"{scaled:.{decimals}f}"
+            if decimals:
+                rendered = rendered.rstrip("0").rstrip(".")
+            return f"{rendered}{suffix}"
+    return str(number)
+
+
+def ellipsize(font: pygame.font.Font, value: str, max_width: int) -> str:
+    """Trim one HUD line by rendered width instead of Korean character count."""
+    if font.size(value)[0] <= max_width:
+        return value
+    suffix = "…"
+    trimmed = value
+    while trimmed and font.size(trimmed + suffix)[0] > max_width:
+        trimmed = trimmed[:-1]
+    return trimmed + suffix
 
 
 def day_period_for_phase(phase: float) -> str:
@@ -2953,43 +2995,49 @@ class GameApp:
             self.screen.blit(self._heat_veil, (0, 0))
 
     def draw_hud(self) -> None:
-        left = pygame.Rect(12, 10, 382, 64)
-        pygame.draw.rect(self.screen, (45, 43, 39), left.move(4, 5))
-        pygame.draw.rect(self.screen, WOOD_DARK, left.inflate(5, 5))
+        left = HUD_LEFT_RECT
+        pygame.draw.rect(self.screen, (45, 43, 39), left.move(3, 4))
+        pygame.draw.rect(self.screen, WOOD_DARK, left.inflate(4, 4))
         pygame.draw.rect(self.screen, (247, 218, 148), left)
-        self.text("블루베리 밸리", 18, BLUEBERRY_DARK, 24, 18)
+        self.text("블루베리 밸리", 16, BLUEBERRY_DARK, left.x + 10, 17)
         stats = [
             ("코인", self.state.money, GOLD),
             ("열매", self.state.blueberries, BLUEBERRY),
             ("씨앗", self.state.seeds, GREEN),
             ("스무디", self.state.smoothies, (182, 82, 160)),
         ]
-        x = 161
-        for label, value, color in stats:
-            pygame.draw.rect(self.screen, WOOD_DARK, (x, 25, 11, 11))
-            pygame.draw.rect(self.screen, color, (x + 2, 27, 7, 7))
-            self.text(label, 13, MUTED, x + 14, 16)
-            self.text(str(value), 16, INK, x + 14, 38)
-            x += 56
+        for stat_rect, (label, value, color) in zip(HUD_STAT_RECTS, stats):
+            icon_x = stat_rect.x
+            pygame.draw.rect(self.screen, WOOD_DARK, (icon_x, 22, 10, 10))
+            pygame.draw.rect(self.screen, color, (icon_x + 2, 24, 6, 6))
+            text_x = icon_x + 12
+            self.text(label, 13, MUTED, text_x, 11)
+            value_label = compact_hud_number(value)
+            available_width = stat_rect.right - text_x - 2
+            value_size = 14 if self.fonts[14].size(value_label)[0] <= available_width else 13
+            value_label = ellipsize(self.fonts[value_size], value_label, available_width)
+            self.text(value_label, value_size, INK, text_x, 33)
 
-        objective = pygame.Rect(407, 10, 462, 64)
-        pygame.draw.rect(self.screen, (45, 43, 39), objective.move(4, 5))
-        pygame.draw.rect(self.screen, WOOD_DARK, objective.inflate(5, 5))
+        objective = HUD_OBJECTIVE_RECT
+        pygame.draw.rect(self.screen, (45, 43, 39), objective.move(3, 4))
+        pygame.draw.rect(self.screen, WOOD_DARK, objective.inflate(4, 4))
         pygame.draw.rect(self.screen, (246, 224, 165), objective)
         goal = self.state.daily_goal()
         goal_progress = min(self.state.daily_goal_progress(), int(goal["target"]))
         self.text(
             f"오늘 목표 · {goal['label']}  {goal_progress}/{goal['target']}",
-            13, BLUEBERRY_DARK, 423, 18,
+            13, BLUEBERRY_DARK, objective.x + 13, 12,
         )
-        objective_text = self.current_objective()
-        if len(objective_text) > 47:
-            objective_text = objective_text[:46] + "…"
-        self.text(objective_text, 13, INK, 423, 43)
+        objective_text = ellipsize(
+            self.fonts[13],
+            self.current_objective(),
+            objective.width - 26,
+        )
+        self.text(objective_text, 13, INK, objective.x + 13, 34)
 
-        right = pygame.Rect(882, 10, 386, 64)
-        pygame.draw.rect(self.screen, (45, 43, 39), right.move(4, 5))
-        pygame.draw.rect(self.screen, WOOD_DARK, right.inflate(5, 5))
+        right = HUD_STATUS_RECT
+        pygame.draw.rect(self.screen, (45, 43, 39), right.move(3, 4))
+        pygame.draw.rect(self.screen, WOOD_DARK, right.inflate(4, 4))
         pygame.draw.rect(self.screen, (247, 218, 148), right)
         day, hour, minute, phase = self.game_clock()
         season, season_day, _year = season_for_day(day)
@@ -3000,15 +3048,31 @@ class GameApp:
             f"{season} {season_day}/{DAYS_PER_SEASON} · "
             f"{WEATHER_LABELS[self.state.weather]}"
         )
-        rank_label = f"등급 {self.state.farm_rank} · 평판 {self.state.reputation}"
-        inventory_label = f"꿀{self.state.honey} 우{self.state.milk} 얼{self.state.ice}"
-        self.text(day_label, 13, MUTED, 895, 17)
-        self.text(season_label, 13, INK, 951, 17)
-        self.text(time_label, 16, INK, 895, 43)
-        self.text(rank_label, 13, BLUEBERRY_DARK, 994, 45)
-        inventory_x = HUD_HELP_RECT.right - 7 - self.fonts[13].size(inventory_label)[0]
-        self.text(inventory_label, 13, INK, inventory_x, 45)
-        pygame.draw.rect(self.screen, WOOD_DARK, HUD_HELP_RECT.inflate(3, 3))
+        rank_label = (
+            f"등급 {self.state.farm_rank} · "
+            f"평판 {compact_hud_number(self.state.reputation)}"
+        )
+        inventory_label = (
+            f"꿀{compact_hud_number(self.state.honey)} "
+            f"우{compact_hud_number(self.state.milk)} "
+            f"얼{compact_hud_number(self.state.ice)}"
+        )
+        day_rect = pygame.Rect(847, 10, 42, 20)
+        season_rect = pygame.Rect(893, 10, 247, 20)
+        time_rect = pygame.Rect(847, 32, 88, 20)
+        rank_rect = pygame.Rect(939, 32, 120, 20)
+        inventory_rect = pygame.Rect(1063, 32, 155, 20)
+        day_label = ellipsize(self.fonts[13], day_label, day_rect.width)
+        season_label = ellipsize(self.fonts[13], season_label, season_rect.width)
+        time_label = ellipsize(self.fonts[15], time_label, time_rect.width)
+        rank_label = ellipsize(self.fonts[13], rank_label, rank_rect.width)
+        inventory_label = ellipsize(self.fonts[13], inventory_label, inventory_rect.width)
+        self.text(day_label, 13, MUTED, day_rect.centerx, 20, center=True)
+        self.text(season_label, 13, INK, season_rect.centerx, 20, center=True)
+        self.text(time_label, 15, INK, time_rect.centerx, 42, center=True)
+        self.text(rank_label, 13, BLUEBERRY_DARK, rank_rect.centerx, 42, center=True)
+        self.text(inventory_label, 13, INK, inventory_rect.centerx, 42, center=True)
+        pygame.draw.rect(self.screen, WOOD_DARK, HUD_HELP_RECT.inflate(2, 2))
         pygame.draw.rect(self.screen, PURPLE_LIGHT, HUD_HELP_RECT)
         self.text("도움말 H", 13, BLUEBERRY_DARK,
                   HUD_HELP_RECT.centerx, HUD_HELP_RECT.centery, center=True)

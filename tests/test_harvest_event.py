@@ -399,6 +399,61 @@ class HarvestEventTests(unittest.TestCase):
         ):
             self.assertFalse(drawn[first].colliderect(drawn[second]))
 
+    def test_large_hud_amounts_are_compact_and_stay_inside_stat_cells(self):
+        values = (9_876_543_210, 1_234_567, 87_654_321, 234_567_890)
+        (
+            self.app.state.money,
+            self.app.state.blueberries,
+            self.app.state.seeds,
+            self.app.state.smoothies,
+        ) = values
+        drawn: dict[str, pygame.Rect] = {}
+        original_text = self.app.text
+
+        def capture_text(value, *args, **kwargs):
+            rect = original_text(value, *args, **kwargs)
+            drawn[value] = rect
+            return rect
+
+        with patch.object(self.app, "text", side_effect=capture_text):
+            self.app.draw_hud()
+
+        labels = [main.compact_hud_number(value) for value in values]
+        self.assertEqual(labels[0], "98.8억")
+        for label, cell in zip(labels, main.HUD_STAT_RECTS):
+            self.assertGreaterEqual(drawn[label].left, cell.left)
+            self.assertLessEqual(drawn[label].right, cell.right)
+        for first, second in zip(labels, labels[1:]):
+            self.assertFalse(drawn[first].colliderect(drawn[second]))
+
+    def test_top_menu_panels_are_compact_and_centered(self):
+        panels = (
+            main.HUD_LEFT_RECT,
+            main.HUD_OBJECTIVE_RECT,
+            main.HUD_STATUS_RECT,
+        )
+        self.assertTrue(all(panel.height <= 52 for panel in panels))
+        self.assertGreaterEqual(panels[0].left, 45)
+        self.assertLessEqual(panels[-1].right, main.SCREEN_W - 45)
+        for first, second in zip(panels, panels[1:]):
+            self.assertGreaterEqual(second.left - first.right, 12)
+
+    def test_customer_queue_has_clear_space_without_tree_overlap(self):
+        customer_zones = []
+        for index, (x, y) in enumerate(main.CUSTOMER_QUEUE_POINTS):
+            customer_zones.append(
+                pygame.Rect(x - 155, y - 214, 310, 228)
+                if index == 0
+                else pygame.Rect(x - 48, y - 142, 96, 156)
+            )
+        tree_zones = [
+            pygame.Rect(x - 48, y - 110, 136, 146)
+            for x, y in main.TREE_POSITIONS
+        ]
+        for customer_zone in customer_zones:
+            for tree_zone in tree_zones:
+                self.assertFalse(customer_zone.colliderect(tree_zone))
+
     def test_b_key_opens_four_by_four_bag_and_e_closes_it(self):
         self.app.state.blueberries = 17
         self.app.state.seeds = 1

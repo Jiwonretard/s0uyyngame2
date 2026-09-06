@@ -22,8 +22,8 @@ MAX_PLOTS = 12
 LAND_BASE_COST = 10_000
 LAND_COST_STEP = 2_500
 CUSTOMER_QUEUE_SIZE = 6
-GROW_SECONDS = 24.0
-REGROW_SECONDS = 17.0
+GROW_SECONDS = 60.0
+REGROW_SECONDS = 60.0
 HARVEST_YIELD = 4
 BAG_STACK_SIZE = 16
 BAG_COLUMNS = 4
@@ -31,13 +31,20 @@ BAG_ROWS = 4
 BAG_SLOT_COUNT = BAG_COLUMNS * BAG_ROWS
 BAG_ITEM_KEYS = (
     "blueberries",
+    "organic_blueberries",
     "seeds",
+    "fertilizer",
     "honey",
     "milk",
     "ice",
     "golden_blueberries",
     "premium_honey",
     "low_fat_milk",
+    "fishing_rod",
+    "carp",
+    "crucian_carp",
+    "bass",
+    "turtle",
 )
 
 DAYS_PER_SEASON = 7
@@ -150,6 +157,7 @@ VIP_STORIES = (
 
 ITEM_COSTS = {
     "seeds": 6,
+    "fertilizer": 100,
     "honey": 2,
     "milk": 3,
     "ice": 1,
@@ -157,6 +165,7 @@ ITEM_COSTS = {
 
 ITEM_LABELS = {
     "seeds": "씨앗",
+    "fertilizer": "비료",
     "honey": "꿀",
     "milk": "우유",
     "ice": "얼음",
@@ -164,14 +173,48 @@ ITEM_LABELS = {
 
 BAG_ITEM_LABELS = {
     "blueberries": "블루베리",
+    "organic_blueberries": "유기농 블루베리",
     "golden_blueberries": "황금 블루베리",
     "premium_honey": "고급 꿀",
     "low_fat_milk": "저지방 우유",
+    "fishing_rod": "낚싯대",
+    "carp": "잉어",
+    "crucian_carp": "붕어",
+    "bass": "베스",
+    "turtle": "거북이",
     **ITEM_LABELS,
 }
 
 RAW_BERRY_PRICE = 3
+ORGANIC_BLUEBERRY_PRICE = 8
 GOLDEN_BLUEBERRY_PRICE = 200
+FISHING_ROD_COST = 2_000
+FISH_PRICES = {
+    "carp": 80,
+    "crucian_carp": 65,
+    "bass": 120,
+    "turtle": 250,
+}
+FISH_CATCH_TABLE = (
+    (0.34, "carp"),
+    (0.68, "crucian_carp"),
+    (0.92, "bass"),
+    (1.00, "turtle"),
+)
+FURNITURE_COSTS = {
+    "bed": 3_000,
+    "drawer": 500,
+    "desk": 1_000,
+    "lantern": 300,
+    "flowerpot": 100,
+}
+FURNITURE_LABELS = {
+    "bed": "침대",
+    "drawer": "서랍",
+    "desk": "책상",
+    "lantern": "랜턴",
+    "flowerpot": "화분",
+}
 SPECIAL_SMOOTHIE_BONUS = 100
 TREE_DROP_TABLE = (
     (0.20, "blueberries"),
@@ -358,6 +401,7 @@ class Plot:
     planted: bool = False
     ready_at: float = 0.0
     cycle_seconds: float = GROW_SECONDS
+    fertilized: bool = False
 
     def is_ready(self, now: float) -> bool:
         return self.planted and now >= self.ready_at
@@ -377,13 +421,20 @@ class Plot:
 class GameState:
     money: int = 36
     blueberries: int = 0
+    organic_blueberries: int = 0
     seeds: int = 3
+    fertilizer: int = 0
     honey: int = 0
     milk: int = 0
     ice: int = 0
     golden_blueberries: int = 0
     premium_honey: int = 0
     low_fat_milk: int = 0
+    fishing_rod: int = 0
+    carp: int = 0
+    crucian_carp: int = 0
+    bass: int = 0
+    turtle: int = 0
     smoothies: int = 0
     active_plots: int = STARTING_PLOTS
     plots: list[Plot] = field(default_factory=lambda: [Plot() for _ in range(MAX_PLOTS)])
@@ -414,6 +465,8 @@ class GameState:
     festival_wins: int = 0
     golden_blueberries_sold: int = 0
     trees_shaken: int = 0
+    fish_caught: int = 0
+    furniture_owned: list[str] = field(default_factory=list)
     tree_shaken_days: dict[str, int] = field(default_factory=dict)
     facility_levels: dict[str, int] = field(
         default_factory=lambda: {key: 0 for key in FACILITY_KEYS}
@@ -841,14 +894,16 @@ class GameState:
         if self.seeds < 1:
             return False, "씨앗이 없어요. 가게에서 씨앗을 사 주세요."
         self.seeds -= 1
-        grow_seconds = self.crop_seconds_for_day(GROW_SECONDS)
+        # A crop cycle is a predictable real-time minute. Weather and season
+        # can still affect yield, but never silently shorten this cooldown.
+        grow_seconds = GROW_SECONDS
         self.plots[plot_index] = Plot(
             planted=True,
             ready_at=current + grow_seconds,
             cycle_seconds=grow_seconds,
+            fertilized=False,
         )
-        weather_note = " 비 덕분에 빨리 자라요!" if self.weather == "rain" else ""
-        return True, "블루베리 씨앗을 심었어요!" + weather_note
+        return True, "블루베리 씨앗을 심었어요! 60초 뒤에 수확할 수 있어요."
 
     def harvest(self, plot_index: int, now: float | None = None) -> tuple[bool, str]:
         current = time.time() if now is None else now
@@ -860,18 +915,36 @@ class GameState:
         if not plot.is_ready(current):
             return False, f"조금만 기다려 주세요. {int(plot.remaining(current)) + 1}초 남았어요."
         harvest_yield = self.harvest_yield_for_day()
-        if not self.can_add_to_bag("blueberries", harvest_yield):
+        harvest_key = "organic_blueberries" if plot.fertilized else "blueberries"
+        if not self.can_add_to_bag(harvest_key, harvest_yield):
             return False, "가방이 가득 차서 수확할 수 없어요. B를 눌러 가방을 확인하세요."
-        self.blueberries += harvest_yield
+        setattr(self, harvest_key, self.inventory(harvest_key) + harvest_yield)
         self.berries_harvested += harvest_yield
         self.daily_berries_harvested += harvest_yield
-        regrow_seconds = self.crop_seconds_for_day(REGROW_SECONDS)
+        regrow_seconds = REGROW_SECONDS
         self.plots[plot_index] = Plot(
             planted=True,
             ready_at=current + regrow_seconds,
             cycle_seconds=regrow_seconds,
+            fertilized=False,
         )
+        if harvest_key == "organic_blueberries":
+            return True, f"유기농 블루베리 {harvest_yield}개를 수확했어요!"
         return True, f"싱싱한 블루베리 {harvest_yield}개를 수확했어요!"
+
+    def fertilize(self, plot_index: int) -> tuple[bool, str]:
+        if not 0 <= plot_index < self.active_plots:
+            return False, "아직 사용할 수 없는 땅이에요."
+        plot = self.plots[plot_index]
+        if not plot.planted:
+            return False, "먼저 블루베리 씨앗을 심어 주세요."
+        if plot.fertilized:
+            return False, "이 밭에는 이미 비료를 사용했어요."
+        if self.fertilizer < 1:
+            return False, "비료가 없어요. 상점에서 구입해 주세요."
+        self.fertilizer -= 1
+        plot.fertilized = True
+        return True, "비료를 사용했어요! 다음 수확은 유기농 블루베리예요."
 
     def use_plot(self, plot_index: int, now: float | None = None) -> tuple[bool, str]:
         current = time.time() if now is None else now
@@ -895,6 +968,58 @@ class GameState:
         setattr(self, key, self.inventory(key) + 1)
         return True, f"{ITEM_LABELS[key]} 1개를 샀어요."
 
+    def buy_fishing_rod(self) -> tuple[bool, str]:
+        if self.fishing_rod:
+            return False, "이미 낚싯대를 가지고 있어요."
+        if self.money < FISHING_ROD_COST:
+            return False, f"낚싯대를 사려면 {FISHING_ROD_COST:,}코인이 필요해요."
+        if not self.can_add_to_bag("fishing_rod", 1):
+            return False, "가방에 낚싯대를 넣을 한 칸이 필요해요."
+        self.money -= FISHING_ROD_COST
+        self.daily_money_spent += FISHING_ROD_COST
+        self.fishing_rod = 1
+        return True, "낚싯대를 샀어요! 연못가에서 E로 낚시할 수 있어요."
+
+    def catch_fish(self, rng: random.Random | None = None) -> tuple[bool, str, str | None]:
+        if not self.fishing_rod:
+            return False, "낚싯대가 없어요. 상점에서 먼저 구입해 주세요.", None
+        picker = rng if rng is not None else random
+        roll = picker.random()
+        fish_key = FISH_CATCH_TABLE[-1][1]
+        for threshold, candidate in FISH_CATCH_TABLE:
+            if roll < threshold:
+                fish_key = candidate
+                break
+        if not self.can_add_to_bag(fish_key, 1):
+            return False, "가방이 가득 차서 물고기를 담을 수 없어요.", None
+        setattr(self, fish_key, self.inventory(fish_key) + 1)
+        self.fish_caught += 1
+        return True, f"{BAG_ITEM_LABELS[fish_key]}을(를) 낚았어요!", fish_key
+
+    def sell_fish(self, key: str) -> tuple[bool, str]:
+        if key not in FISH_PRICES:
+            return False, "판매할 수 없는 물고기예요."
+        if self.inventory(key) < 1:
+            return False, f"판매할 {BAG_ITEM_LABELS[key]}이(가) 없어요."
+        price = FISH_PRICES[key]
+        setattr(self, key, self.inventory(key) - 1)
+        self.money += price
+        self.daily_money_earned += price
+        return True, f"{BAG_ITEM_LABELS[key]} 1마리를 팔아 {price}코인을 벌었어요."
+
+    def buy_furniture(self, key: str) -> tuple[bool, str]:
+        if key not in FURNITURE_COSTS:
+            return False, "판매하지 않는 가구예요."
+        if key in self.furniture_owned:
+            return False, f"{FURNITURE_LABELS[key]}은(는) 이미 집에 있어요."
+        cost = FURNITURE_COSTS[key]
+        if self.money < cost:
+            return False, f"{FURNITURE_LABELS[key]} 구입에는 {cost:,}코인이 필요해요."
+        self.money -= cost
+        self.daily_money_spent += cost
+        self.furniture_owned.append(key)
+        return True, f"{FURNITURE_LABELS[key]}을(를) 구입해 집에 배치했어요."
+
     def sell_blueberry(self, day: int | None = None) -> tuple[bool, str]:
         if self.blueberries < 1:
             return False, "판매할 블루베리가 없어요."
@@ -914,6 +1039,16 @@ class GameState:
         self.golden_blueberries_sold += 1
         self.daily_money_earned += GOLDEN_BLUEBERRY_PRICE
         return True, f"황금 블루베리 1개를 팔아 {GOLDEN_BLUEBERRY_PRICE}코인을 벌었어요!"
+
+    def sell_organic_blueberry(self) -> tuple[bool, str]:
+        if self.organic_blueberries < 1:
+            return False, "판매할 유기농 블루베리가 없어요."
+        self.organic_blueberries -= 1
+        self.money += ORGANIC_BLUEBERRY_PRICE
+        self.berries_sold += 1
+        self.daily_blueberries_sold += 1
+        self.daily_money_earned += ORGANIC_BLUEBERRY_PRICE
+        return True, f"유기농 블루베리 1개를 팔아 {ORGANIC_BLUEBERRY_PRICE}코인을 벌었어요."
 
     def make_smoothie(
         self,
@@ -1127,8 +1262,19 @@ class GameState:
             state.vip_customers_served = max(0, int(state.vip_customers_served))
             state.festival_wins = max(0, int(state.festival_wins))
             state.golden_blueberries = max(0, int(state.golden_blueberries))
+            state.organic_blueberries = max(0, int(state.organic_blueberries))
+            state.fertilizer = max(0, int(state.fertilizer))
             state.premium_honey = max(0, int(state.premium_honey))
             state.low_fat_milk = max(0, int(state.low_fat_milk))
+            state.fishing_rod = 1 if state.fishing_rod else 0
+            for fish_key in FISH_PRICES:
+                setattr(state, fish_key, max(0, int(getattr(state, fish_key))))
+            state.fish_caught = max(0, int(state.fish_caught))
+            raw_furniture = state.furniture_owned if isinstance(state.furniture_owned, list) else []
+            state.furniture_owned = [
+                key for key in FURNITURE_COSTS
+                if key in raw_furniture
+            ]
             state.golden_blueberries_sold = max(0, int(state.golden_blueberries_sold))
             state.trees_shaken = max(0, int(state.trees_shaken))
             raw_tree_days = state.tree_shaken_days if isinstance(state.tree_shaken_days, dict) else {}
@@ -1233,6 +1379,7 @@ class GameState:
                         planted=bool(item.get("planted", False)),
                         ready_at=float(item.get("ready_at", 0.0)),
                         cycle_seconds=max(0.1, float(item.get("cycle_seconds", GROW_SECONDS))),
+                        fertilized=bool(item.get("fertilized", False)),
                     )
                 )
             while len(state.plots) < MAX_PLOTS:

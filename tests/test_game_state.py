@@ -17,6 +17,9 @@ from game_state import (  # noqa: E402
     CustomerOrder,
     DAYS_PER_SEASON,
     FACILITY_CONFIG,
+    FISHING_ROD_COST,
+    FISH_PRICES,
+    FURNITURE_COSTS,
     GAME_DAY_SECONDS,
     GOLDEN_BLUEBERRY_PRICE,
     GROW_SECONDS,
@@ -26,6 +29,7 @@ from game_state import (  # noqa: E402
     LAND_BASE_COST,
     LAND_COST_STEP,
     LEGACY_GAME_DAY_SECONDS,
+    ORGANIC_BLUEBERRY_PRICE,
     RAW_BERRY_PRICE,
     REGROW_SECONDS,
     SMOOTHIE_PRICE_MULTIPLIER,
@@ -81,6 +85,77 @@ class GameStateTests(unittest.TestCase):
         self.assertEqual(state.seeds, before - 1)
         self.assertFalse(state.plots[1].is_ready(100.0 + GROW_SECONDS - 0.01))
         self.assertTrue(state.plots[1].is_ready(100.0 + GROW_SECONDS))
+        self.assertEqual(GROW_SECONDS, 60.0)
+
+    def test_fertilizer_makes_the_next_exact_one_minute_crop_organic(self):
+        state = GameState.new(now=100.0)
+        state.fertilizer = 1
+
+        ok, _ = state.fertilize(0)
+        self.assertTrue(ok)
+        self.assertTrue(state.plots[0].fertilized)
+        ok, message = state.harvest(0, now=100.0)
+
+        self.assertTrue(ok)
+        self.assertIn("유기농", message)
+        self.assertEqual(state.organic_blueberries, HARVEST_YIELD)
+        self.assertEqual(state.blueberries, 0)
+        self.assertEqual(state.fertilizer, 0)
+        self.assertFalse(state.plots[0].fertilized)
+        self.assertEqual(state.plots[0].ready_at, 160.0)
+        self.assertFalse(state.plots[0].is_ready(159.999))
+        self.assertTrue(state.plots[0].is_ready(160.0))
+
+    def test_organic_blueberries_sell_at_their_own_market_price(self):
+        state = GameState.new(now=100.0)
+        state.organic_blueberries = 1
+        before_money = state.money
+
+        ok, _ = state.sell_organic_blueberry()
+
+        self.assertTrue(ok)
+        self.assertEqual(state.organic_blueberries, 0)
+        self.assertEqual(state.money, before_money + ORGANIC_BLUEBERRY_PRICE)
+
+    def test_fishing_rod_fish_slots_sales_and_furniture_persist(self):
+        state = GameState.new(now=100.0)
+        state.money = FISHING_ROD_COST + sum(FURNITURE_COSTS.values())
+        ok, _ = state.buy_fishing_rod()
+        self.assertTrue(ok)
+        self.assertEqual(state.money, sum(FURNITURE_COSTS.values()))
+
+        expected_fish = (
+            (0.00, "carp"),
+            (0.40, "crucian_carp"),
+            (0.75, "bass"),
+            (0.99, "turtle"),
+        )
+        for roll, expected in expected_fish:
+            ok, _message, fish = state.catch_fish(FixedRng(roll))
+            self.assertTrue(ok)
+            self.assertEqual(fish, expected)
+            self.assertIn((expected, 1), state.bag_stacks())
+
+        money_before_sale = state.money
+        ok, _ = state.sell_fish("turtle")
+        self.assertTrue(ok)
+        self.assertEqual(state.money, money_before_sale + FISH_PRICES["turtle"])
+        self.assertEqual(state.turtle, 0)
+
+        for key in FURNITURE_COSTS:
+            ok, _ = state.buy_furniture(key)
+            self.assertTrue(ok)
+        self.assertEqual(state.furniture_owned, list(FURNITURE_COSTS))
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "save.json"
+            state.save(path)
+            loaded = GameState.load(path)
+        self.assertEqual(loaded.fishing_rod, 1)
+        self.assertEqual(loaded.carp, 1)
+        self.assertEqual(loaded.crucian_carp, 1)
+        self.assertEqual(loaded.bass, 1)
+        self.assertEqual(loaded.furniture_owned, list(FURNITURE_COSTS))
 
     def test_complete_smoothie_economy_loop(self):
         state = GameState.new(now=100.0)

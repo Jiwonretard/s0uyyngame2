@@ -26,11 +26,16 @@ from game_state import (
     DAYS_PER_SEASON,
     FACILITY_CONFIG,
     FACILITY_KEYS,
+    FISHING_ROD_COST,
+    FISH_PRICES,
+    FURNITURE_COSTS,
+    FURNITURE_LABELS,
     GAME_DAY_SECONDS,
     GOLDEN_BLUEBERRY_PRICE,
     ITEM_COSTS,
     MAX_FACILITY_LEVEL,
     MAX_PLOTS,
+    ORGANIC_BLUEBERRY_PRICE,
     SPECIAL_SMOOTHIE_BONUS,
     STREETLIGHT_COST,
     STREETLIGHT_COUNT,
@@ -51,7 +56,7 @@ WORLD_LEFT = -WORLD_EDGE_MARGIN
 WORLD_TOP = -WORLD_EDGE_MARGIN
 WORLD_RIGHT = WORLD_W + WORLD_EDGE_MARGIN
 WORLD_BOTTOM = WORLD_H + WORLD_EDGE_MARGIN
-FPS = 60
+FPS = 120
 PLAYER_SPEED = 235.0
 DAY_SECONDS = GAME_DAY_SECONDS
 CUSTOMER_RETURN_SECONDS = 14.0
@@ -60,6 +65,7 @@ AUTOSAVE_SECONDS = 5.0
 BASE_DIR = Path(__file__).resolve().parent
 SAVE_PATH = BASE_DIR / "save_game.json"
 SALE_SOUND_PATH = BASE_DIR / "assets" / "smoothie_sale.wav"
+BLENDER_SOUND_PATH = BASE_DIR / "assets" / "blender_grind.wav"
 BGM_PATH = BASE_DIR / "assets" / "blueberry_morning.ogg"
 PLAYER_SHEET_PATH = BASE_DIR / "assets" / "player_reference_sheet.png"
 INGREDIENT_SOURCE_PATHS = {
@@ -71,6 +77,9 @@ INGREDIENT_SOURCE_PATHS = {
 BGM_NORMAL_VOLUME = 0.28
 BGM_DUCK_VOLUME = 0.055
 BGM_VOLUME_CHANGE_SPEED = 2.8
+FISHING_MIN_WAIT = 3.0
+FISHING_MAX_WAIT = 7.0
+FISHING_BITE_SECONDS = 1.5
 GAME_START_MINUTES = 6 * 60
 GAME_CLOCK_MINUTES = 24 * 60
 RAIN_DROP_COUNT = 72
@@ -137,13 +146,7 @@ STREETLIGHT_POSITIONS: tuple[tuple[int, int], ...] = (
     (-10, 570),
     (-10, 970),
 )
-STREETLIGHT_SITE_LABELS: tuple[str, ...] = (
-    "블렌더 북서쪽",
-    "상점 북서쪽",
-    "연못 북쪽",
-    "블루베리 밭 서쪽",
-    "생산 시설 서쪽",
-)
+STREETLIGHT_SITE_LABELS: tuple[str, ...] = ("가로등",) * STREETLIGHT_COUNT
 
 CUSTOMER_QUEUE_POINTS = [
     (1840, 1322),
@@ -177,11 +180,26 @@ PLOT_RECTS = [
 ]
 
 TREE_POSITIONS = [
-    (80, 485), (115, 790), (90, 1110), (650, 215), (850, 225),
-    (1020, 220), (1450, 560), (2045, 265), (2080, 620),
-    (2040, 970), (2050, 1340), (1415, 1320), (890, 1250),
-    (575, 1300), (245, 1320), (700, 1240),
+    (-70, 250), (-80, 760), (-60, 1260),
+    (650, 60), (970, 50), (1290, 60),
+    (1450, 560), (2160, 190), (2180, 650),
+    (2150, 1040), (2160, 1450), (1420, 1420),
+    (1080, 1390), (700, 1420), (320, 1380),
 ]
+
+FISH_KEYS = tuple(FISH_PRICES)
+FURNITURE_KEYS = tuple(FURNITURE_COSTS)
+SHOP_CLOSE_RECT = pygame.Rect(765, 578, 190, 48)
+SHOP_FISH_BUTTON = pygame.Rect(325, 578, 260, 48)
+HUD_HELP_RECT = pygame.Rect(1193, 15, 66, 25)
+
+
+def furniture_card_rect(index: int) -> pygame.Rect:
+    return pygame.Rect(115 + index * 210, 535, 190, 115)
+
+
+def fish_sale_card_rect(index: int) -> pygame.Rect:
+    return pygame.Rect(195 + index * 225, 260, 205, 235)
 
 
 def find_korean_font() -> str | None:
@@ -394,6 +412,8 @@ class GameApp:
         self.last_autosave = time.time()
         self.sale_sound: pygame.mixer.Sound | None = None
         self.sale_channel: pygame.mixer.Channel | None = None
+        self.blender_sound: pygame.mixer.Sound | None = None
+        self.blender_channel: pygame.mixer.Channel | None = None
         self.pending_sale_sounds = 0
         self.audio_error = ""
         self.music_error = ""
@@ -419,6 +439,10 @@ class GameApp:
         self.blender_animation_remaining = 0.0
         self.blender_complete_message = ""
         self.blender_cards = self._make_blender_cards()
+        self.fishing_phase = "idle"
+        self.fishing_bite_at = 0.0
+        self.fishing_escape_at = 0.0
+        self.fishing_bobber = (POND.centerx, POND.centery)
         self.selected_facility = "beehive"
         self.ingredient_icons: dict[str, pygame.Surface] = {}
         self.ingredient_icons_small: dict[str, pygame.Surface] = {}
@@ -428,6 +452,17 @@ class GameApp:
         self.player_frames: dict[str, list[pygame.Surface]] = {}
         self.player_sprite_error = ""
         self._load_player_frames()
+        # Reuse full-screen alpha surfaces instead of allocating them every
+        # frame. This noticeably lowers pressure on macOS' scaled display.
+        self._lighting_overlay = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
+        self._rain_veil = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
+        self._rain_veil.fill((62, 90, 126, 22))
+        self._heat_veil = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
+        self._heat_veil.fill((255, 167, 68, 18))
+        self._lamp_glow = pygame.Surface((150, 150), pygame.SRCALPHA)
+        pygame.draw.circle(self._lamp_glow, (255, 195, 80, 12), (75, 75), 70)
+        pygame.draw.circle(self._lamp_glow, (255, 218, 118, 24), (75, 75), 39)
+        pygame.draw.circle(self._lamp_glow, (255, 240, 177, 62), (75, 75), 12)
 
     def _make_flowers(self) -> list[tuple[int, int, tuple[int, int, int]]]:
         flowers = []
@@ -451,10 +486,12 @@ class GameApp:
     @staticmethod
     def _make_shop_buttons() -> list[tuple[pygame.Rect, str, str, tuple[int, int, int]]]:
         return [
-            (pygame.Rect(402, 294, 222, 76), "seeds", "씨앗", GREEN),
-            (pygame.Rect(656, 294, 222, 76), "honey", "꿀", GOLD),
-            (pygame.Rect(402, 390, 222, 76), "milk", "우유", (84, 149, 183)),
-            (pygame.Rect(656, 390, 222, 76), "ice", "얼음", (79, 169, 194)),
+            (pygame.Rect(325, 218, 290, 82), "seeds", "씨앗", GREEN),
+            (pygame.Rect(665, 218, 290, 82), "honey", "꿀", GOLD),
+            (pygame.Rect(325, 318, 290, 82), "milk", "우유", (84, 149, 183)),
+            (pygame.Rect(665, 318, 290, 82), "ice", "얼음", (79, 169, 194)),
+            (pygame.Rect(325, 418, 290, 82), "fertilizer", "비료", (135, 105, 61)),
+            (pygame.Rect(665, 418, 290, 82), "fishing_rod", "낚싯대", WATER),
         ]
 
     @staticmethod
@@ -476,6 +513,14 @@ class GameApp:
             self.sale_channel = pygame.mixer.Channel(0)
         except (pygame.error, FileNotFoundError) as exc:
             self.audio_error = str(exc)
+        try:
+            if not pygame.mixer.get_init():
+                pygame.mixer.init(44100, -16, 2, 512)
+            self.blender_sound = pygame.mixer.Sound(str(BLENDER_SOUND_PATH))
+            self.blender_sound.set_volume(0.58)
+            self.blender_channel = pygame.mixer.Channel(1)
+        except (pygame.error, FileNotFoundError) as exc:
+            self.audio_error = f"{self.audio_error}; {exc}".strip("; ")
         try:
             if not pygame.mixer.get_init():
                 pygame.mixer.init(44100, -16, 2, 512)
@@ -620,8 +665,89 @@ class GameApp:
                 ),
             )
             return True
+        if key == "fertilizer":
+            scale = 0.7 if small else 1.0
+            width, height = round(32 * scale), round(38 * scale)
+            rect = pygame.Rect(0, 0, width, height)
+            rect.center = center
+            pygame.draw.rect(self.screen, WOOD_DARK, rect.inflate(5, 5), border_radius=5)
+            pygame.draw.rect(self.screen, (191, 151, 82), rect, border_radius=4)
+            pygame.draw.rect(self.screen, CREAM, (rect.x + 5, rect.y + 9, width - 10, 12))
+            pygame.draw.circle(self.screen, LEAF, rect.center, max(3, round(6 * scale)))
+            return True
+        if key == "fishing_rod":
+            scale = 0.72 if small else 1.0
+            x, y = center
+            pygame.draw.line(
+                self.screen, WOOD_DARK,
+                (x - round(16 * scale), y + round(18 * scale)),
+                (x + round(14 * scale), y - round(18 * scale)),
+                max(3, round(5 * scale)),
+            )
+            pygame.draw.line(
+                self.screen, WATER_LIGHT,
+                (x + round(14 * scale), y - round(18 * scale)),
+                (x + round(19 * scale), y + round(10 * scale)),
+                max(1, round(2 * scale)),
+            )
+            pygame.draw.arc(
+                self.screen, INK,
+                pygame.Rect(x + round(13 * scale), y + round(6 * scale),
+                            round(12 * scale), round(14 * scale)),
+                0.2, 3.4, max(1, round(2 * scale)),
+            )
+            return True
+        if key in FISH_KEYS:
+            x, y = center
+            scale = 0.72 if small else 1.0
+            if key == "turtle":
+                shell = (72, 137, 79)
+                pygame.draw.ellipse(
+                    self.screen, WOOD_DARK,
+                    (x - round(18 * scale), y - round(13 * scale),
+                     round(36 * scale), round(27 * scale)),
+                )
+                pygame.draw.ellipse(
+                    self.screen, shell,
+                    (x - round(15 * scale), y - round(10 * scale),
+                     round(30 * scale), round(21 * scale)),
+                )
+                pygame.draw.circle(self.screen, LEAF,
+                                   (x + round(20 * scale), y - round(2 * scale)),
+                                   max(3, round(6 * scale)))
+                return True
+            colors = {
+                "carp": (216, 135, 68),
+                "crucian_carp": (188, 170, 104),
+                "bass": (79, 132, 95),
+            }
+            body = colors[key]
+            pygame.draw.polygon(
+                self.screen, WOOD_DARK,
+                [(x - round(17 * scale), y),
+                 (x - round(28 * scale), y - round(11 * scale)),
+                 (x - round(28 * scale), y + round(11 * scale))],
+            )
+            pygame.draw.ellipse(
+                self.screen, WOOD_DARK,
+                (x - round(18 * scale), y - round(13 * scale),
+                 round(40 * scale), round(27 * scale)),
+            )
+            pygame.draw.ellipse(
+                self.screen, body,
+                (x - round(15 * scale), y - round(10 * scale),
+                 round(34 * scale), round(21 * scale)),
+            )
+            pygame.draw.circle(self.screen, WHITE,
+                               (x + round(10 * scale), y - round(3 * scale)),
+                               max(2, round(3 * scale)))
+            pygame.draw.circle(self.screen, INK,
+                               (x + round(11 * scale), y - round(3 * scale)),
+                               max(1, round(2 * scale)))
+            return True
         base_key = {
             "golden_blueberries": "blueberries",
+            "organic_blueberries": "blueberries",
             "premium_honey": "honey",
             "low_fat_milk": "milk",
         }.get(key, key)
@@ -648,11 +774,18 @@ class GameApp:
                 (badge_center[0], badge_center[1] - badge_radius // 2),
                 (badge_center[0], badge_center[1] + badge_radius // 2), 2,
             )
-        elif key == "low_fat_milk":
+        elif key in ("low_fat_milk", "organic_blueberries"):
             pygame.draw.circle(self.screen, WOOD_DARK, badge_center, badge_radius + 2)
-            pygame.draw.circle(self.screen, WATER, badge_center, badge_radius)
-            if not small:
+            badge_color = WATER if key == "low_fat_milk" else LEAF
+            pygame.draw.circle(self.screen, badge_color, badge_center, badge_radius)
+            if key == "low_fat_milk" and not small:
                 self.text("L", 13, WHITE, badge_center[0], badge_center[1], center=True)
+            elif key == "organic_blueberries":
+                pygame.draw.line(
+                    self.screen, WHITE,
+                    (badge_center[0] - 3, badge_center[1] + 2),
+                    (badge_center[0] + 3, badge_center[1] - 3), 2,
+                )
         return True
 
     def _load_player_frames(self) -> None:
@@ -840,6 +973,13 @@ class GameApp:
             if timer - dt > 0
         }
         now = time.time()
+        if self.overlay is None and self.fishing_phase == "waiting" and now >= self.fishing_bite_at:
+            self.fishing_phase = "bite"
+            self.fishing_escape_at = now + FISHING_BITE_SECONDS
+            self.notify("입질이 왔어요! 연못가에서 E를 눌러 낚아 올리세요!")
+        elif self.overlay is None and self.fishing_phase == "bite" and now > self.fishing_escape_at:
+            self.fishing_phase = "idle"
+            self.notify("물고기가 미끼를 물고 달아났어요. 다시 던져 보세요.", True)
         if self.state.customers_waiting < CUSTOMER_QUEUE_SIZE and now >= self.next_customer_at:
             was_empty = self.state.customers_waiting == 0
             self.state.add_customer()
@@ -862,8 +1002,11 @@ class GameApp:
             self.duck_background_music(self.sale_sound.get_length() + 0.25)
         if not self.music_error:
             effect_is_playing = bool(
-                self.sale_channel
-                and (self.sale_channel.get_busy() or self.pending_sale_sounds)
+                (
+                    self.sale_channel
+                    and (self.sale_channel.get_busy() or self.pending_sale_sounds)
+                )
+                or (self.blender_channel and self.blender_channel.get_busy())
             )
             should_duck = effect_is_playing or time.time() < self.bgm_duck_until
             target_volume = 0.0 if self.bgm_muted else (
@@ -877,6 +1020,8 @@ class GameApp:
                 0.0, self.blender_animation_remaining - max(0.0, dt)
             )
             if self.blender_animation_remaining <= 0.0:
+                if self.blender_channel:
+                    self.blender_channel.fadeout(120)
                 self.overlay = None
                 self.notify(self.blender_complete_message)
                 self.spawn_particles(
@@ -951,9 +1096,11 @@ class GameApp:
                 if not plot.planted:
                     prompt = f"씨앗 심기 (보유 {self.state.seeds})"
                 elif plot.is_ready(now):
-                    prompt = f"블루베리 수확하기 (+{self.state.harvest_yield_for_day()})"
+                    crop_name = "유기농 블루베리" if plot.fertilized else "블루베리"
+                    prompt = f"{crop_name} 수확하기 (+{self.state.harvest_yield_for_day()})"
                 else:
-                    prompt = f"자라는 중 · {int(plot.remaining(now)) + 1}초 남음"
+                    fertilizer_note = " · 유기농 수확 예정" if plot.fertilized else " · F 비료 사용"
+                    prompt = f"자라는 중 · {int(plot.remaining(now)) + 1}초 남음{fertilizer_note}"
                 candidates.append((gap, {"kind": "plot", "index": index, "prompt": prompt,
                                          "point": rect.center}))
 
@@ -978,9 +1125,9 @@ class GameApp:
                 installed = self.state.streetlights_installed[index]
                 site_name = STREETLIGHT_SITE_LABELS[index]
                 prompt = (
-                    f"{site_name} 가로등 · 저녁부터 새벽까지 자동 점등"
+                    "가로등 · 저녁부터 새벽까지 자동 점등"
                     if installed
-                    else f"{site_name} 가로등 설치 ({STREETLIGHT_COST:,}코인)"
+                    else f"가로등 설치 ({STREETLIGHT_COST:,}코인)"
                 )
                 candidates.append((gap, {
                     "kind": "streetlight",
@@ -1001,7 +1148,7 @@ class GameApp:
             else "새 손님을 기다리는 중"
         )
         fixed = [
-            ("save", (HOUSE.centerx, HOUSE.bottom + 37), 82, "집 앞에서 농장 저장하기"),
+            ("home", (HOUSE.centerx, HOUSE.bottom + 37), 82, "농장집 들어가기 · 저장과 가구 꾸미기"),
             ("shop", (SHOP.centerx, SHOP.bottom + 42), 90, "상점 들어가기"),
             ("craft", (CAFE.centerx, CAFE.bottom + 42), 90, craft_prompt),
             ("sell_raw", (MARKET.centerx, MARKET.bottom + 38), 88,
@@ -1016,6 +1163,25 @@ class GameApp:
             gap = distance(position, point)
             if gap <= radius:
                 candidates.append((gap, {"kind": kind, "prompt": prompt, "point": point}))
+        pond_gap = distance_to_rect(position, POND)
+        if pond_gap <= 88:
+            pond_point = (
+                max(POND.left, min(position[0], POND.right)),
+                max(POND.top, min(position[1], POND.bottom)),
+            )
+            if not self.state.fishing_rod:
+                fishing_prompt = "낚시하려면 상점에서 낚싯대 구입"
+            elif self.fishing_phase == "bite":
+                fishing_prompt = "입질! 지금 E로 낚아 올리기"
+            elif self.fishing_phase == "waiting":
+                fishing_prompt = "찌를 지켜보는 중 · 입질을 기다리세요"
+            else:
+                fishing_prompt = "낚싯대 던지기"
+            candidates.append((pond_gap, {
+                "kind": "fishing",
+                "prompt": fishing_prompt,
+                "point": pond_point,
+            }))
         for key, rect in FACILITY_RECTS.items():
             point = (rect.centerx, rect.bottom + 38)
             gap = distance(position, point)
@@ -1048,11 +1214,11 @@ class GameApp:
             return
         kind = target["kind"]
         if kind == "plot":
-            before = self.state.blueberries
+            before_harvested = self.state.berries_harvested
             ok, message = self.state.use_plot(target["index"])
-            if ok and self.state.blueberries > before:
+            if ok and self.state.berries_harvested > before_harvested:
                 self.spawn_harvest_impact(
-                    target["point"], self.state.blueberries - before
+                    target["point"], self.state.berries_harvested - before_harvested
                 )
             elif ok:
                 self.action_effects.append(
@@ -1093,6 +1259,13 @@ class GameApp:
         elif kind == "shop":
             self.overlay = "shop"
             return
+        elif kind == "home":
+            self.save()
+            self.overlay = "home"
+            return
+        elif kind == "fishing":
+            self.use_fishing(target["point"])
+            return
         elif kind == "facility":
             self.selected_facility = target["key"]
             self.overlay = "facility"
@@ -1103,9 +1276,6 @@ class GameApp:
                 self.spawn_particles(
                     (target["point"][0], target["point"][1] - 82), GOLD, 24
                 )
-        elif kind == "save":
-            self.save(announce=True)
-            return
         elif kind == "craft":
             if self.state.current_order is None:
                 self.notify("지금은 주문한 손님이 없어요.", True)
@@ -1147,7 +1317,10 @@ class GameApp:
             self.save()
 
     def buy_item(self, key: str) -> None:
-        ok, message = self.state.buy_item(key)
+        if key == "fishing_rod":
+            ok, message = self.state.buy_fishing_rod()
+        else:
+            ok, message = self.state.buy_item(key)
         self.notify(message, not ok)
         if ok:
             self.save()
@@ -1156,12 +1329,85 @@ class GameApp:
         if key == "golden_blueberries":
             ok, message = self.state.sell_golden_blueberry()
             color = GOLD
+        elif key == "organic_blueberries":
+            ok, message = self.state.sell_organic_blueberry()
+            color = LEAF
         else:
             ok, message = self.state.sell_blueberry()
             color = BLUEBERRY
         self.notify(message, not ok)
         if ok:
             self.spawn_particles((MARKET.centerx, MARKET.bottom + 20), color, 18)
+            self.save()
+
+    def sell_fish(self, key: str) -> None:
+        ok, message = self.state.sell_fish(key)
+        self.notify(message, not ok)
+        if ok:
+            self.spawn_particles((SHOP.centerx, SHOP.bottom + 20), WATER_LIGHT, 18)
+            self.save()
+
+    def buy_furniture(self, key: str) -> None:
+        ok, message = self.state.buy_furniture(key)
+        self.notify(message, not ok)
+        if ok:
+            self.save()
+
+    def use_fertilizer_nearby(self) -> None:
+        position = (self.player.x, self.player.y)
+        choices = [
+            (distance_to_rect(position, rect), index, rect.center)
+            for index, rect in enumerate(PLOT_RECTS[:self.state.active_plots])
+            if distance_to_rect(position, rect) <= 84
+        ]
+        if not choices:
+            self.notify("비료를 사용할 블루베리 밭 가까이 가세요.", True)
+            return
+        _gap, index, point = min(choices)
+        ok, message = self.state.fertilize(index)
+        self.notify(message, not ok)
+        if ok:
+            self.spawn_particles(point, LEAF, 20)
+            self.action_effects.append(
+                ActionEffect(point[0], point[1] - 76, "유기농 수확 예정!", GREEN_DARK)
+            )
+            self.save()
+
+    def use_fishing(self, pond_edge: tuple[float, float]) -> None:
+        if not self.state.fishing_rod:
+            self.notify("낚싯대가 없어요. 상점에서 2,000코인에 구입하세요.", True)
+            return
+        now = time.time()
+        if self.fishing_phase == "idle":
+            edge_x, edge_y = pond_edge
+            if edge_x <= POND.left:
+                self.fishing_bobber = (POND.left + 55, max(POND.top + 35, min(edge_y, POND.bottom - 35)))
+            elif edge_x >= POND.right:
+                self.fishing_bobber = (POND.right - 55, max(POND.top + 35, min(edge_y, POND.bottom - 35)))
+            elif edge_y <= POND.top:
+                self.fishing_bobber = (max(POND.left + 45, min(edge_x, POND.right - 45)), POND.top + 55)
+            else:
+                self.fishing_bobber = (max(POND.left + 45, min(edge_x, POND.right - 45)), POND.bottom - 55)
+            wait = self.rng.uniform(FISHING_MIN_WAIT, FISHING_MAX_WAIT)
+            if self.state.weather == "rain":
+                wait *= 0.7
+            self.fishing_phase = "waiting"
+            self.fishing_bite_at = now + wait
+            self.notify("찌를 던졌어요. 물속으로 잠길 때 E를 누르세요.")
+            return
+        if self.fishing_phase == "waiting":
+            self.fishing_phase = "idle"
+            self.notify("너무 일찍 감았어요. 물고기가 다가올 때까지 기다리세요.", True)
+            return
+
+        ok, message, fish_key = self.state.catch_fish(self.rng)
+        self.fishing_phase = "idle"
+        self.notify(message, not ok)
+        if ok and fish_key is not None:
+            self.tree_drops.append(
+                TreeDrop(self.fishing_bobber[0], self.fishing_bobber[1] - 12, fish_key, 1)
+            )
+            self.spawn_particles(self.fishing_bobber, WATER_LIGHT, 24)
             self.save()
 
     def use_facility_main_action(self) -> None:
@@ -1232,6 +1478,9 @@ class GameApp:
         self.blender_animation_remaining = BLENDER_DURATION
         self.blender_complete_message = message
         self.overlay = "blending"
+        if self.blender_sound and self.blender_channel:
+            self.blender_channel.play(self.blender_sound)
+            self.duck_background_music(BLENDER_DURATION + 0.2)
         self.save()
 
     def close_help(self) -> None:
@@ -1263,10 +1512,15 @@ class GameApp:
             else:
                 self.running = False
             return
-        if event.key == pygame.K_h:
+        if (
+            event.key == pygame.K_h
+            or getattr(event, "scancode", None) == pygame.KSCAN_H
+        ):
+            if self.overlay == "blending":
+                return
             if self.overlay == "help":
                 self.close_help()
-            elif self.overlay is None:
+            else:
                 self.overlay = "help"
             return
         if (
@@ -1312,6 +1566,33 @@ class GameApp:
                 self.sell_market_item("blueberries")
             elif event.key == pygame.K_2:
                 self.sell_market_item("golden_blueberries")
+            elif event.key == pygame.K_3:
+                self.sell_market_item("organic_blueberries")
+            elif self.is_interaction_key(event):
+                self.overlay = None
+            return
+        if self.overlay == "fish_market":
+            shortcuts = {
+                pygame.K_1: "carp",
+                pygame.K_2: "crucian_carp",
+                pygame.K_3: "bass",
+                pygame.K_4: "turtle",
+            }
+            if event.key in shortcuts:
+                self.sell_fish(shortcuts[event.key])
+            elif self.is_interaction_key(event):
+                self.overlay = "shop"
+            return
+        if self.overlay == "home":
+            shortcuts = {
+                pygame.K_1: "bed",
+                pygame.K_2: "drawer",
+                pygame.K_3: "desk",
+                pygame.K_4: "lantern",
+                pygame.K_5: "flowerpot",
+            }
+            if event.key in shortcuts:
+                self.buy_furniture(shortcuts[event.key])
             elif self.is_interaction_key(event):
                 self.overlay = None
             return
@@ -1340,11 +1621,32 @@ class GameApp:
                 self.finish_blender_mix()
             return
         if self.overlay == "shop":
-            shortcuts = {pygame.K_1: "seeds", pygame.K_2: "honey", pygame.K_3: "milk", pygame.K_4: "ice"}
+            shortcuts = {
+                pygame.K_1: "seeds",
+                pygame.K_2: "honey",
+                pygame.K_3: "milk",
+                pygame.K_4: "ice",
+                pygame.K_5: "fertilizer",
+                pygame.K_6: "fishing_rod",
+            }
             if event.key in shortcuts:
                 self.buy_item(shortcuts[event.key])
+            elif (
+                event.key == pygame.K_f
+                or getattr(event, "scancode", None) == pygame.KSCAN_F
+            ):
+                self.overlay = "fish_market"
             elif self.is_interaction_key(event):
                 self.overlay = None
+            return
+        if (
+            self.overlay is None
+            and (
+                event.key == pygame.K_f
+                or getattr(event, "scancode", None) == pygame.KSCAN_F
+            )
+        ):
+            self.use_fertilizer_nearby()
             return
         if self.overlay is None and self.is_interaction_key(event):
             self.interact()
@@ -1384,20 +1686,38 @@ class GameApp:
                     return
             return
         if self.overlay == "shop":
-            if pygame.Rect(510, 520, 260, 52).collidepoint(position):
+            if SHOP_CLOSE_RECT.collidepoint(position):
                 self.overlay = None
+                return
+            if SHOP_FISH_BUTTON.collidepoint(position):
+                self.overlay = "fish_market"
                 return
             for rect, key, _label, _color in self.shop_buttons:
                 if rect.collidepoint(position):
                     self.buy_item(key)
                     return
+        if self.overlay == "fish_market":
+            for index, key in enumerate(FISH_KEYS):
+                if fish_sale_card_rect(index).collidepoint(position):
+                    self.sell_fish(key)
+                    return
+            if pygame.Rect(510, 555, 260, 52).collidepoint(position):
+                self.overlay = "shop"
+            return
+        if self.overlay == "home":
+            for index, key in enumerate(FURNITURE_KEYS):
+                if furniture_card_rect(index).collidepoint(position):
+                    self.buy_furniture(key)
+                    return
+            if pygame.Rect(1040, 90, 150, 44).collidepoint(position):
+                self.overlay = None
+            return
         if self.overlay == "market":
-            if pygame.Rect(370, 275, 250, 170).collidepoint(position):
-                self.sell_market_item("blueberries")
-                return
-            if pygame.Rect(660, 275, 250, 170).collidepoint(position):
-                self.sell_market_item("golden_blueberries")
-                return
+            products = ("blueberries", "golden_blueberries", "organic_blueberries")
+            for index, key in enumerate(products):
+                if pygame.Rect(250 + index * 270, 275, 240, 170).collidepoint(position):
+                    self.sell_market_item(key)
+                    return
             if pygame.Rect(510, 520, 260, 52).collidepoint(position):
                 self.overlay = None
             return
@@ -1420,7 +1740,7 @@ class GameApp:
             if pygame.Rect(510, 614, 260, 48).collidepoint(position):
                 self.overlay = None
             return
-        if self.overlay is None and pygame.Rect(1168, 18, 92, 38).collidepoint(position):
+        if self.overlay is None and HUD_HELP_RECT.collidepoint(position):
             self.overlay = "help"
 
     def draw_ground(self) -> None:
@@ -1490,6 +1810,23 @@ class GameApp:
             pygame.draw.ellipse(self.screen, (74, 144, 72), (x - 15, y - 5, 30, 12))
             pygame.draw.line(self.screen, (209, 131, 177), (x, y - 3), (x, y - 15), 2)
             pygame.draw.circle(self.screen, (242, 183, 212), (x + 3, y - 17), 5)
+
+    def draw_fishing_line(self) -> None:
+        if self.fishing_phase == "idle":
+            return
+        hand = self.world_to_screen((self.player.x + 10, self.player.y - 48))
+        bobber_x, bobber_y = self.world_to_screen(self.fishing_bobber)
+        if self.fishing_phase == "bite":
+            bobber_y += 8
+        pygame.draw.line(self.screen, (235, 231, 215), hand, (bobber_x, bobber_y), 2)
+        pygame.draw.circle(self.screen, WOOD_DARK, (bobber_x, bobber_y), 7)
+        pygame.draw.rect(self.screen, WHITE, (bobber_x - 4, bobber_y - 5, 8, 5))
+        pygame.draw.rect(self.screen, RED, (bobber_x - 4, bobber_y, 8, 5))
+        ripple = 18 if self.fishing_phase == "bite" else 11
+        pygame.draw.ellipse(
+            self.screen, WATER_LIGHT,
+            (bobber_x - ripple, bobber_y + 4, ripple * 2, max(5, ripple // 2)), 2,
+        )
 
     def draw_house(self, world_rect: pygame.Rect, title: str, wall: tuple[int, int, int],
                    roof: tuple[int, int, int], door_x: int | None = None) -> None:
@@ -1753,7 +2090,13 @@ class GameApp:
         pygame.draw.rect(self.screen, (239, 199, 126), sign)
         self.text("나의 블루베리 밭", 18, INK, sign.centerx, sign.centery, center=True)
 
-    def draw_bush(self, rect: pygame.Rect, progress: float, ready: bool) -> None:
+    def draw_bush(
+        self,
+        rect: pygame.Rect,
+        progress: float,
+        ready: bool,
+        fertilized: bool = False,
+    ) -> None:
         cx, base_y = rect.centerx, rect.bottom - 21
         if progress < 0.18:
             pygame.draw.rect(self.screen, GREEN_DARK, (cx - 2, base_y - 25, 5, 27))
@@ -1777,6 +2120,17 @@ class GameApp:
             pygame.draw.rect(self.screen, BLUEBERRY_DARK, (x - 6, y - 5, 13, 13))
             pygame.draw.rect(self.screen, BLUEBERRY, (x - 4, y - 4, 9, 9))
             pygame.draw.rect(self.screen, (205, 194, 240), (x - 3, y - 3, 3, 3))
+        if fertilized:
+            badge = (rect.left + 15, rect.top + 13)
+            pygame.draw.circle(self.screen, WOOD_DARK, badge, 12)
+            pygame.draw.circle(self.screen, LEAF, badge, 9)
+            pygame.draw.line(
+                self.screen,
+                WHITE,
+                (badge[0] - 4, badge[1] + 3),
+                (badge[0] + 4, badge[1] - 4),
+                2,
+            )
         if ready:
             pygame.draw.rect(self.screen, WOOD_DARK, (rect.right - 22, rect.top - 5, 26, 26))
             pygame.draw.rect(self.screen, GOLD, (rect.right - 19, rect.top - 2, 20, 20))
@@ -1806,7 +2160,12 @@ class GameApp:
                     pygame.draw.rect(self.screen, (104, 62, 43), (x, y + 5, 8, 3))
             plot = self.state.plots[index]
             if plot.planted:
-                self.draw_bush(rect, plot.progress(now), plot.is_ready(now))
+                self.draw_bush(
+                    rect,
+                    plot.progress(now),
+                    plot.is_ready(now),
+                    plot.fertilized,
+                )
             else:
                 pygame.draw.rect(self.screen, (83, 50, 37), (rect.centerx - 4, rect.centery - 4, 8, 8))
                 self.text("빈 밭", 13, CREAM, rect.centerx, rect.centery - 20, center=True)
@@ -1836,12 +2195,12 @@ class GameApp:
             pygame.draw.circle(self.screen, WOOD_DARK, (x, y), 15)
             pygame.draw.circle(self.screen, (187, 142, 78), (x, y), 10)
             pygame.draw.rect(self.screen, WOOD_DARK, (x - 3, y - 31, 6, 28))
-            sign_width = max(122, self.fonts[13].size(site_name)[0] + 28)
-            sign = pygame.Rect(x - sign_width // 2, y - 78, sign_width, 42)
+            sign_width = max(142, self.fonts[13].size(site_name)[0] + 34)
+            sign = pygame.Rect(x - sign_width // 2, y - 93, sign_width, 54)
             rounded_rect(self.screen, sign, (244, 216, 151), 8, WOOD_DARK, 3)
-            self.text(site_name, 13, INK, sign.centerx, sign.y + 7, center=True)
+            self.text(site_name, 14, INK, sign.centerx, sign.y + 16, center=True)
             self.text(f"{STREETLIGHT_COST:,}코인", 13, BLUEBERRY_DARK,
-                      sign.centerx, sign.y + 25, center=True)
+                      sign.centerx, sign.y + 38, center=True)
             return
 
         period = day_period_for_phase(self.game_clock()[3])
@@ -1999,10 +2358,16 @@ class GameApp:
         if self.player_frames:
             pygame.draw.rect(self.screen, (55, 98, 47), (x - 24, y - 7, 48, 10))
             frame_index = 0
+            step_index = 0
+            bob = 0
             if self.is_moving:
-                frame_index = 1 + (int(self.walk_phase / 2) % 2)
+                step_index = int(self.walk_phase) % 4
+                frame_index = (0, 1, 0, 2)[step_index]
+                bob = -2 if step_index in (1, 3) else 0
             frame = self.player_frames[self.direction][frame_index]
-            self.screen.blit(frame, frame.get_rect(midbottom=(x, y + 2)))
+            self.screen.blit(frame, frame.get_rect(midbottom=(x, y + 2 + bob)))
+            if self.is_moving and self.direction in ("left", "right", "up"):
+                self.draw_walking_feet(x, y, step_index)
             if self.action_timer > 0:
                 self.draw_harvest_basket(x, y)
             return
@@ -2042,6 +2407,27 @@ class GameApp:
         pygame.draw.rect(self.screen, BLUEBERRY, (x + 15, y - 55, 9, 9))
         if self.action_timer > 0:
             self.draw_harvest_basket(x, y)
+
+    def draw_walking_feet(self, x: int, y: int, step_index: int) -> None:
+        """Emphasize the stride in the photo-derived side/back sprites."""
+        swing = 5 if step_index in (1, 2) else -5
+        shoe = (45, 35, 75)
+        sole = (27, 25, 43)
+        if self.direction in ("left", "right"):
+            facing = 1 if self.direction == "right" else -1
+            back_x = x - facing * 7
+            front_x = x + facing * (7 + swing)
+            pygame.draw.rect(self.screen, sole, (back_x - 6, y - 6, 13, 7))
+            pygame.draw.rect(self.screen, shoe, (back_x - 5, y - 8, 11, 5))
+            pygame.draw.rect(self.screen, sole, (front_x - 6, y - 5, 14, 7))
+            pygame.draw.rect(self.screen, shoe, (front_x - 5, y - 8, 12, 6))
+        else:
+            left_y = y - 6 + swing
+            right_y = y - 6 - swing
+            pygame.draw.rect(self.screen, sole, (x - 15, left_y, 12, 7))
+            pygame.draw.rect(self.screen, shoe, (x - 14, left_y - 3, 10, 5))
+            pygame.draw.rect(self.screen, sole, (x + 3, right_y, 12, 7))
+            pygame.draw.rect(self.screen, shoe, (x + 4, right_y - 3, 10, 5))
 
     def draw_particles(self) -> None:
         for particle in self.particles:
@@ -2107,6 +2493,7 @@ class GameApp:
         self.draw_ground()
         self.draw_paths()
         self.draw_pond()
+        self.draw_fishing_line()
         self.draw_farm_fence()
         self.draw_plots()
         self.draw_expansion_sign()
@@ -2199,7 +2586,7 @@ class GameApp:
         if alpha <= 0:
             return
         color_rgb = (red, green, blue)
-        overlay = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
+        overlay = self._lighting_overlay
         overlay.fill((*color_rgb, alpha))
 
         if period in ("저녁", "밤", "새벽"):
@@ -2242,11 +2629,7 @@ class GameApp:
                 lamp_x, lamp_y = self.world_to_screen((point[0] + 25, point[1] - 82))
                 if not (-120 < lamp_x < SCREEN_W + 120 and -120 < lamp_y < SCREEN_H + 120):
                     continue
-                glow = pygame.Surface((150, 150), pygame.SRCALPHA)
-                pygame.draw.circle(glow, (255, 195, 80, 12), (75, 75), 70)
-                pygame.draw.circle(glow, (255, 218, 118, 24), (75, 75), 39)
-                pygame.draw.circle(glow, (255, 240, 177, 62), (75, 75), 12)
-                self.screen.blit(glow, (lamp_x - 75, lamp_y - 75))
+                self.screen.blit(self._lamp_glow, (lamp_x - 75, lamp_y - 75))
 
     def draw_celestial_cycle(self) -> None:
         day, _hour, _minute, phase = self.game_clock()
@@ -2300,9 +2683,7 @@ class GameApp:
         weather = self.state.weather
         tick = int(time.time() * 100)
         if weather == "rain":
-            veil = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
-            veil.fill((62, 90, 126, 22))
-            self.screen.blit(veil, (0, 0))
+            self.screen.blit(self._rain_veil, (0, 0))
             for x, y_offset, speed, length in RAIN_DROP_LAYOUT:
                 # X never changes while each drop gets its own unrelated
                 # starting height and speed. This makes the rain both fall
@@ -2326,48 +2707,47 @@ class GameApp:
                 y = 115 + (index * 79) % 500 + round(math.sin(tick / 15 + index) * 20)
                 pygame.draw.ellipse(self.screen, (190, 154, 65), (x, y, 11, 6))
         elif weather == "heat":
-            warmth = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
-            warmth.fill((255, 167, 68, 18))
-            self.screen.blit(warmth, (0, 0))
+            self.screen.blit(self._heat_veil, (0, 0))
 
     def draw_hud(self) -> None:
-        left = pygame.Rect(14, 14, 440, 78)
-        pygame.draw.rect(self.screen, (45, 43, 39), left.move(5, 6))
-        pygame.draw.rect(self.screen, WOOD_DARK, left.inflate(6, 6))
-        pygame.draw.rect(self.screen, (224, 184, 111), left)
-        pygame.draw.rect(self.screen, (247, 218, 148), left.inflate(-8, -8))
-        self.text("블루베리 밸리", 22, BLUEBERRY_DARK, 32, 27)
+        left = pygame.Rect(12, 10, 382, 64)
+        pygame.draw.rect(self.screen, (45, 43, 39), left.move(4, 5))
+        pygame.draw.rect(self.screen, WOOD_DARK, left.inflate(5, 5))
+        pygame.draw.rect(self.screen, (247, 218, 148), left)
+        self.text("블루베리 밸리", 18, BLUEBERRY_DARK, 24, 18)
         stats = [
             ("코인", self.state.money, GOLD),
             ("열매", self.state.blueberries, BLUEBERRY),
             ("씨앗", self.state.seeds, GREEN),
             ("스무디", self.state.smoothies, (182, 82, 160)),
         ]
-        x = 202
+        x = 161
         for label, value, color in stats:
-            pygame.draw.rect(self.screen, WOOD_DARK, (x, 34, 13, 13))
-            pygame.draw.rect(self.screen, color, (x + 2, 36, 9, 9))
-            self.text(label, 13, MUTED, x + 17, 25)
-            self.text(str(value), 18, INK, x + 17, 46)
-            x += 61
+            pygame.draw.rect(self.screen, WOOD_DARK, (x, 25, 11, 11))
+            pygame.draw.rect(self.screen, color, (x + 2, 27, 7, 7))
+            self.text(label, 13, MUTED, x + 14, 16)
+            self.text(str(value), 16, INK, x + 14, 38)
+            x += 56
 
-        objective = pygame.Rect(470, 14, 510, 78)
-        pygame.draw.rect(self.screen, (45, 43, 39), objective.move(5, 6))
-        pygame.draw.rect(self.screen, WOOD_DARK, objective.inflate(6, 6))
+        objective = pygame.Rect(407, 10, 462, 64)
+        pygame.draw.rect(self.screen, (45, 43, 39), objective.move(4, 5))
+        pygame.draw.rect(self.screen, WOOD_DARK, objective.inflate(5, 5))
         pygame.draw.rect(self.screen, (246, 224, 165), objective)
         goal = self.state.daily_goal()
         goal_progress = min(self.state.daily_goal_progress(), int(goal["target"]))
         self.text(
             f"오늘 목표 · {goal['label']}  {goal_progress}/{goal['target']}",
-            13, BLUEBERRY_DARK, 490, 25,
+            13, BLUEBERRY_DARK, 423, 18,
         )
-        self.wrapped_text(self.current_objective(), 14, INK, pygame.Rect(490, 49, 470, 34))
+        objective_text = self.current_objective()
+        if len(objective_text) > 47:
+            objective_text = objective_text[:46] + "…"
+        self.text(objective_text, 13, INK, 423, 43)
 
-        right = pygame.Rect(996, 14, 270, 78)
-        pygame.draw.rect(self.screen, (45, 43, 39), right.move(5, 6))
-        pygame.draw.rect(self.screen, WOOD_DARK, right.inflate(6, 6))
-        pygame.draw.rect(self.screen, (224, 184, 111), right)
-        pygame.draw.rect(self.screen, (247, 218, 148), right.inflate(-8, -8))
+        right = pygame.Rect(882, 10, 386, 64)
+        pygame.draw.rect(self.screen, (45, 43, 39), right.move(4, 5))
+        pygame.draw.rect(self.screen, WOOD_DARK, right.inflate(5, 5))
+        pygame.draw.rect(self.screen, (247, 218, 148), right)
         day, hour, minute, phase = self.game_clock()
         season, season_day, _year = season_for_day(day)
         day_label = f"{day}일차"
@@ -2378,19 +2758,17 @@ class GameApp:
             f"{WEATHER_LABELS[self.state.weather]}"
         )
         rank_label = f"등급 {self.state.farm_rank} · 평판 {self.state.reputation}"
-        inventory_label = (
-            f"꿀 {self.state.honey}  우유 {self.state.milk}  얼음 {self.state.ice}"
-        )
-        self.text(day_label, 13, MUTED, 1013, 22)
-        self.text(season_label, 13, INK, 1070, 22)
-        self.text(time_label, 17, INK, 1013, 47)
-        rank_x = right.right - 8 - self.fonts[13].size(rank_label)[0]
-        self.text(rank_label, 13, BLUEBERRY_DARK, rank_x, 49)
-        self.text(inventory_label, 13, INK, 1013, 70)
-        help_rect = pygame.Rect(1182, 19, 76, 28)
-        pygame.draw.rect(self.screen, WOOD_DARK, help_rect.inflate(4, 4))
-        pygame.draw.rect(self.screen, PURPLE_LIGHT, help_rect)
-        self.text("도움말 H", 13, BLUEBERRY_DARK, help_rect.centerx, help_rect.centery, center=True)
+        inventory_label = f"꿀{self.state.honey} 우{self.state.milk} 얼{self.state.ice}"
+        self.text(day_label, 13, MUTED, 895, 17)
+        self.text(season_label, 13, INK, 951, 17)
+        self.text(time_label, 16, INK, 895, 43)
+        self.text(rank_label, 13, BLUEBERRY_DARK, 994, 45)
+        inventory_x = HUD_HELP_RECT.right - 7 - self.fonts[13].size(inventory_label)[0]
+        self.text(inventory_label, 13, INK, inventory_x, 45)
+        pygame.draw.rect(self.screen, WOOD_DARK, HUD_HELP_RECT.inflate(3, 3))
+        pygame.draw.rect(self.screen, PURPLE_LIGHT, HUD_HELP_RECT)
+        self.text("도움말 H", 13, BLUEBERRY_DARK,
+                  HUD_HELP_RECT.centerx, HUD_HELP_RECT.centery, center=True)
 
     def draw_prompt(self) -> None:
         target = self.nearest_interaction()
@@ -2423,21 +2801,23 @@ class GameApp:
         shade = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
         shade.fill((31, 26, 39, 172))
         self.screen.blit(shade, (0, 0))
-        card = pygame.Rect(300, 110, 680, 490)
+        card = pygame.Rect(190, 100, 900, 500)
         pygame.draw.rect(self.screen, (28, 25, 30), card.move(11, 11))
         pygame.draw.rect(self.screen, WOOD_DARK, card.inflate(14, 14))
         pygame.draw.rect(self.screen, WOOD, card)
         pygame.draw.rect(self.screen, CREAM, card.inflate(-18, -18))
         self.text("블루베리 생과 시장", 32, BLUEBERRY_DARK,
-                  card.centerx, 155, center=True)
-        self.text("팔고 싶은 열매를 선택하세요. 황금 블루베리는 한 알에 200코인이에요.",
-                  15, MUTED, card.centerx, 195, center=True)
+                  card.centerx, 145, center=True)
+        self.text("일반·황금·유기농 블루베리를 한 알씩 바로 판매할 수 있어요.",
+                  15, MUTED, card.centerx, 188, center=True)
 
         products = [
-            (pygame.Rect(370, 275, 250, 170), "blueberries", "일반 블루베리",
+            (pygame.Rect(250, 275, 240, 170), "blueberries", "일반 블루베리",
              self.state.raw_blueberry_price(), self.state.blueberries, BLUEBERRY),
-            (pygame.Rect(660, 275, 250, 170), "golden_blueberries", "황금 블루베리",
+            (pygame.Rect(520, 275, 240, 170), "golden_blueberries", "황금 블루베리",
              GOLDEN_BLUEBERRY_PRICE, self.state.golden_blueberries, GOLD),
+            (pygame.Rect(790, 275, 240, 170), "organic_blueberries", "유기농 블루베리",
+             ORGANIC_BLUEBERRY_PRICE, self.state.organic_blueberries, LEAF),
         ]
         for index, (rect, key, label, price, amount, color) in enumerate(products, start=1):
             rounded_rect(self.screen, rect, (255, 244, 207), 14, WOOD_DARK, 4)
@@ -2460,17 +2840,27 @@ class GameApp:
         shade = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
         shade.fill((31, 26, 39, 165))
         self.screen.blit(shade, (0, 0))
-        card = pygame.Rect(330, 130, 620, 470)
+        card = pygame.Rect(280, 55, 720, 620)
         pygame.draw.rect(self.screen, (32, 30, 31), card.move(10, 10))
         pygame.draw.rect(self.screen, WOOD_DARK, card.inflate(14, 14))
         pygame.draw.rect(self.screen, WOOD, card)
         pygame.draw.rect(self.screen, CREAM, card.inflate(-18, -18))
-        self.text("상점", 32, BLUEBERRY_DARK, card.centerx, 175, center=True)
-        self.text(f"보유 코인  {self.state.money}", 18, INK, card.centerx, 215, center=True)
-        amounts = {"seeds": self.state.seeds, "honey": self.state.honey,
-                   "milk": self.state.milk, "ice": self.state.ice}
+        self.text("상점", 32, BLUEBERRY_DARK, card.centerx, 91, center=True)
+        self.text(f"보유 코인  {self.state.money}", 18, INK, card.centerx, 128, center=True)
+        self.text("숫자 1~6 구매 · F 물고기 판매", 14, MUTED,
+                  card.centerx, 160, center=True)
+        amounts = {
+            "seeds": self.state.seeds,
+            "honey": self.state.honey,
+            "milk": self.state.milk,
+            "ice": self.state.ice,
+            "fertilizer": self.state.fertilizer,
+            "fishing_rod": 1 if self.state.fishing_rod else 0,
+        }
         for index, (rect, key, label, color) in enumerate(self.shop_buttons, start=1):
-            affordable = self.state.money >= ITEM_COSTS[key]
+            price = FISHING_ROD_COST if key == "fishing_rod" else ITEM_COSTS[key]
+            already_owned = key == "fishing_rod" and self.state.fishing_rod
+            affordable = self.state.money >= price and not already_owned
             fill = color if affordable else (174, 168, 177)
             pygame.draw.rect(self.screen, WOOD_DARK, rect.inflate(6, 6))
             pygame.draw.rect(self.screen, fill, rect)
@@ -2480,14 +2870,168 @@ class GameApp:
             if icon is not None:
                 self.screen.blit(icon, icon.get_rect(center=(rect.x + 39, rect.centery)))
                 text_center_x += 25
+            elif self.draw_item_icon(key, (rect.x + 39, rect.centery)):
+                text_center_x += 25
             self.text(f"[{index}] {label} 1개", 18, WHITE,
                       text_center_x, rect.y + 24, center=True)
-            self.text(f"{ITEM_COSTS[key]}코인 · 보유 {amounts[key]}", 14, WHITE,
+            status = "구매 완료" if already_owned else f"{price:,}코인 · 보유 {amounts[key]}"
+            self.text(status, 14, WHITE,
                       text_center_x, rect.y + 53, center=True)
-        close = pygame.Rect(510, 520, 260, 52)
-        pygame.draw.rect(self.screen, WOOD_DARK, close.inflate(6, 6))
-        pygame.draw.rect(self.screen, BLUEBERRY, close)
-        self.text("가게 나가기  E", 18, WHITE, close.centerx, close.centery, center=True)
+        rounded_rect(self.screen, SHOP_FISH_BUTTON, WATER, 10, WOOD_DARK, 4)
+        self.text("물고기 판매  F", 18, WHITE,
+                  SHOP_FISH_BUTTON.centerx, SHOP_FISH_BUTTON.centery, center=True)
+        rounded_rect(self.screen, SHOP_CLOSE_RECT, BLUEBERRY, 10, WOOD_DARK, 4)
+        self.text("가게 나가기  E", 18, WHITE,
+                  SHOP_CLOSE_RECT.centerx, SHOP_CLOSE_RECT.centery, center=True)
+
+    def draw_fish_market_overlay(self) -> None:
+        shade = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
+        shade.fill((25, 34, 43, 178))
+        self.screen.blit(shade, (0, 0))
+        card = pygame.Rect(145, 65, 990, 600)
+        pygame.draw.rect(self.screen, (28, 25, 30), card.move(11, 11))
+        pygame.draw.rect(self.screen, WOOD_DARK, card.inflate(14, 14))
+        pygame.draw.rect(self.screen, WATER, card)
+        pygame.draw.rect(self.screen, CREAM, card.inflate(-18, -18))
+        self.text("오늘 잡은 물고기 판매", 32, BLUEBERRY_DARK,
+                  card.centerx, 108, center=True)
+        self.text("연못의 찌가 물속으로 잠길 때 E를 눌러 낚아 올리세요.",
+                  15, MUTED, card.centerx, 150, center=True)
+        self.text(f"보유 코인  {self.state.money:,}", 17, INK,
+                  card.centerx, 186, center=True)
+
+        for index, key in enumerate(FISH_KEYS):
+            rect = fish_sale_card_rect(index)
+            rounded_rect(self.screen, rect, (245, 235, 201), 14, WOOD_DARK, 4)
+            self.draw_item_icon(key, (rect.centerx, rect.y + 63))
+            self.text(f"[{index + 1}] {BAG_ITEM_LABELS[key]}", 18, INK,
+                      rect.centerx, rect.y + 116, center=True)
+            self.text(f"가방에 {self.state.inventory(key)}마리", 14, MUTED,
+                      rect.centerx, rect.y + 151, center=True)
+            badge = pygame.Rect(rect.x + 22, rect.bottom - 58, rect.width - 44, 36)
+            rounded_rect(self.screen, badge, WATER, 9, WOOD_DARK, 2)
+            self.text(f"1마리 +{FISH_PRICES[key]:,}코인", 15, WHITE,
+                      badge.centerx, badge.centery, center=True)
+
+        back = pygame.Rect(510, 555, 260, 52)
+        rounded_rect(self.screen, back, BLUEBERRY, 10, WOOD_DARK, 4)
+        self.text("상점으로 돌아가기  E", 18, WHITE,
+                  back.centerx, back.centery, center=True)
+
+    def draw_furniture(self, key: str, center: tuple[int, int], scale: float = 1.0) -> None:
+        """Draw the first original pixel-art design for each farmhouse item."""
+        x, y = center
+        if key == "bed":
+            w, h = round(200 * scale), round(84 * scale)
+            rect = pygame.Rect(x - w // 2, y - h // 2, w, h)
+            pygame.draw.rect(self.screen, WOOD_DARK, rect.inflate(8, 8), border_radius=5)
+            pygame.draw.rect(self.screen, (161, 105, 64), rect, border_radius=4)
+            pygame.draw.rect(self.screen, (236, 211, 169), rect.inflate(-12, -12))
+            pygame.draw.rect(self.screen, (130, 91, 161),
+                             (rect.x + round(58 * scale), rect.y + round(12 * scale),
+                              rect.width - round(70 * scale), rect.height - round(24 * scale)))
+            pygame.draw.rect(self.screen, WHITE,
+                             (rect.x + round(12 * scale), rect.y + round(12 * scale),
+                              round(44 * scale), rect.height - round(24 * scale)))
+        elif key == "drawer":
+            rect = pygame.Rect(x - round(38 * scale), y - round(48 * scale),
+                               round(76 * scale), round(96 * scale))
+            pygame.draw.rect(self.screen, WOOD_DARK, rect.inflate(7, 7))
+            pygame.draw.rect(self.screen, (157, 92, 53), rect)
+            for row in range(3):
+                drawer = pygame.Rect(rect.x + 8, rect.y + 8 + row * round(29 * scale),
+                                     rect.width - 16, round(23 * scale))
+                pygame.draw.rect(self.screen, (194, 127, 70), drawer)
+                pygame.draw.circle(self.screen, GOLD, drawer.center, max(2, round(3 * scale)))
+        elif key == "desk":
+            pygame.draw.rect(self.screen, WOOD_DARK,
+                             (x - round(72 * scale), y - round(28 * scale),
+                              round(144 * scale), round(21 * scale)))
+            pygame.draw.rect(self.screen, (180, 116, 61),
+                             (x - round(68 * scale), y - round(25 * scale),
+                              round(136 * scale), round(14 * scale)))
+            for leg_x in (x - round(58 * scale), x + round(47 * scale)):
+                pygame.draw.rect(self.screen, WOOD_DARK,
+                                 (leg_x, y - round(10 * scale),
+                                  round(11 * scale), round(55 * scale)))
+        elif key == "lantern":
+            pygame.draw.line(self.screen, WOOD_DARK,
+                             (x, y - round(56 * scale)), (x, y + round(32 * scale)),
+                             max(3, round(7 * scale)))
+            pygame.draw.rect(self.screen, WOOD_DARK,
+                             (x - round(25 * scale), y - round(47 * scale),
+                              round(50 * scale), round(49 * scale)))
+            pygame.draw.rect(self.screen, (255, 219, 105),
+                             (x - round(18 * scale), y - round(40 * scale),
+                              round(36 * scale), round(35 * scale)))
+            pygame.draw.rect(self.screen, WOOD_DARK,
+                             (x - round(32 * scale), y + round(28 * scale),
+                              round(64 * scale), round(9 * scale)))
+        elif key == "flowerpot":
+            pygame.draw.rect(self.screen, (173, 94, 55),
+                             (x - round(23 * scale), y, round(46 * scale), round(36 * scale)))
+            pygame.draw.rect(self.screen, WOOD_DARK,
+                             (x - round(28 * scale), y - round(4 * scale),
+                              round(56 * scale), round(9 * scale)))
+            pygame.draw.line(self.screen, GREEN_DARK,
+                             (x, y), (x, y - round(46 * scale)), max(3, round(6 * scale)))
+            pygame.draw.ellipse(self.screen, LEAF,
+                                (x - round(31 * scale), y - round(43 * scale),
+                                 round(34 * scale), round(21 * scale)))
+            pygame.draw.ellipse(self.screen, GREEN,
+                                (x, y - round(55 * scale),
+                                 round(34 * scale), round(23 * scale)))
+
+    def draw_home_overlay(self) -> None:
+        shade = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
+        shade.fill((31, 26, 39, 178))
+        self.screen.blit(shade, (0, 0))
+        room = pygame.Rect(55, 40, 1170, 640)
+        pygame.draw.rect(self.screen, (31, 27, 32), room.move(10, 10))
+        pygame.draw.rect(self.screen, WOOD_DARK, room.inflate(12, 12))
+        pygame.draw.rect(self.screen, (244, 222, 176), room)
+        pygame.draw.rect(self.screen, (190, 139, 85), (room.x, 365, room.width, 315))
+        for floor_y in range(385, 680, 28):
+            pygame.draw.line(self.screen, (157, 105, 68),
+                             (room.x, floor_y), (room.right, floor_y), 2)
+        window = pygame.Rect(548, 115, 184, 118)
+        pygame.draw.rect(self.screen, WOOD_DARK, window.inflate(10, 10))
+        pygame.draw.rect(self.screen, WATER_LIGHT, window)
+        pygame.draw.line(self.screen, CREAM, window.midtop, window.midbottom, 8)
+        pygame.draw.line(self.screen, CREAM, window.midleft, window.midright, 8)
+        rug = pygame.Rect(430, 330, 420, 145)
+        rounded_rect(self.screen, rug, (135, 87, 161), 28, BLUEBERRY_DARK, 7)
+        self.text("나의 농장집 · 가구 상점", 28, BLUEBERRY_DARK,
+                  room.centerx, 76, center=True)
+        self.text(f"가구를 사면 즉시 방에 놓여요 · 보유 {self.state.money:,}코인",
+                  14, MUTED, room.centerx, 105, center=True)
+        exit_button = pygame.Rect(1040, 90, 150, 44)
+        rounded_rect(self.screen, exit_button, BLUEBERRY, 9, WOOD_DARK, 3)
+        self.text("집 나가기 E", 15, WHITE,
+                  exit_button.centerx, exit_button.centery, center=True)
+
+        placements = {
+            "bed": (225, 300),
+            "drawer": (995, 285),
+            "desk": (670, 310),
+            "lantern": (890, 315),
+            "flowerpot": (385, 318),
+        }
+        for key in self.state.furniture_owned:
+            if key in placements:
+                self.draw_furniture(key, placements[key], 0.75)
+
+        for index, key in enumerate(FURNITURE_KEYS):
+            rect = furniture_card_rect(index)
+            owned = key in self.state.furniture_owned
+            fill = (224, 238, 196) if owned else (255, 240, 198)
+            rounded_rect(self.screen, rect, fill, 11, WOOD_DARK, 3)
+            self.draw_furniture(key, (rect.centerx, rect.y + 45), 0.3)
+            self.text(f"[{index + 1}] {FURNITURE_LABELS[key]}", 15, INK,
+                      rect.centerx, rect.y + 79, center=True)
+            status = "배치 완료" if owned else f"{FURNITURE_COSTS[key]:,}코인"
+            self.text(status, 13, GREEN_DARK if owned else BLUEBERRY_DARK,
+                      rect.centerx, rect.y + 100, center=True)
 
     def draw_blender_overlay(self) -> None:
         shade = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
@@ -3001,12 +3545,12 @@ class GameApp:
         self.text("화면 속 장소로 캐릭터를 이동한 뒤 E를 눌러 운영하세요.", 17, MUTED,
                   card.centerx, 145, center=True)
         rows = [
-            ("이동·가방", "WASD · B 가방", "마을을 걸어 다니고 4×4 재료 가방을 확인해요."),
-            ("농사·나무", "작물/큰 나무 앞 E", "작물을 돌보고 큰 나무를 흔들어 랜덤 아이템을 얻어요."),
-            ("생산 시설", "남쪽 시설 앞 E", "벌통·제빙기·젖소 축사를 짓고 생산품을 받아요."),
-            ("손님·평판", "정확한 주문 판매", "평판 등급을 올리면 시설과 VIP 손님이 해금돼요."),
-            ("제조·판매", "블렌더 E → +/- · 5/6", "주문을 맞추고 희귀 재료를 골라 3초 동안 갈아요."),
-            ("낮·밤·가로등", "하루 24분 · 부지 E", "사진으로 지정한 5곳에 가로등을 설치하고 밤길을 밝혀요."),
+            ("이동·메뉴", "WASD · B 가방 · H 도움말", "한글 입력 상태에서도 물리 키로 메뉴를 열 수 있어요."),
+            ("농사·비료", "밭 E · 자랄 때 F", "수확 뒤 60초 재성장, 비료를 주면 유기농 열매를 얻어요."),
+            ("낚시", "상점 낚싯대 → 연못 E", "찌가 잠기는 짧은 순간 다시 E를 눌러 물고기를 잡아요."),
+            ("집·가구", "농장집 문 앞 E", "집에 들어가 침대·서랍·책상·랜턴·화분을 구입해 꾸며요."),
+            ("제조·판매", "블렌더 E → +/- · 5/6", "주문 재료를 맞추면 3초 동안 소리와 함께 직접 갈아요."),
+            ("낮·밤·가로등", "하루 24분 · 부지 E", "지정된 5곳의 가로등은 저녁부터 새벽까지 자동으로 켜져요."),
         ]
         y = 176
         for title, control, body in rows:
@@ -3043,6 +3587,10 @@ class GameApp:
             self.draw_market_overlay()
         elif self.overlay == "shop":
             self.draw_shop_overlay()
+        elif self.overlay == "fish_market":
+            self.draw_fish_market_overlay()
+        elif self.overlay == "home":
+            self.draw_home_overlay()
         elif self.overlay == "blender":
             self.draw_blender_overlay()
         elif self.overlay == "blending":

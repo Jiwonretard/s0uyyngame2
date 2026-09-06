@@ -28,6 +28,15 @@ class RecordingChannel:
 
 
 class SaleAudioTests(unittest.TestCase):
+    def test_blender_grinding_sound_covers_the_full_three_second_animation(self):
+        with wave.open(str(main.BLENDER_SOUND_PATH), "rb") as sound:
+            duration = sound.getnframes() / sound.getframerate()
+            self.assertEqual(sound.getframerate(), 44_100)
+            self.assertEqual(sound.getnchannels(), 2)
+            self.assertGreaterEqual(duration, main.BLENDER_DURATION)
+            samples = sound.readframes(sound.getnframes())
+            self.assertGreater(audioop.max(samples, sound.getsampwidth()), 2_000)
+
     def test_audio_keeps_original_and_extra_leading_preroll(self):
         with wave.open(str(main.SALE_SOUND_PATH), "rb") as sound:
             self.assertEqual(sound.getframerate(), 44_100)

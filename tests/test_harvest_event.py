@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+import math
 import sys
 import tempfile
 import unittest
@@ -438,6 +439,113 @@ class HarvestEventTests(unittest.TestCase):
         self.app.handle_key(event)
 
         self.assertEqual(self.app.overlay, "bag")
+
+    def test_physical_h_scancode_opens_and_closes_help_with_non_latin_input(self):
+        event = pygame.event.Event(
+            pygame.KEYDOWN,
+            key=0,
+            scancode=pygame.KSCAN_H,
+            mod=0,
+        )
+
+        self.app.handle_key(event)
+        self.assertEqual(self.app.overlay, "help")
+        self.app.draw()
+        self.app.handle_key(event)
+        self.assertIsNone(self.app.overlay)
+
+    def test_fertilizer_shortcut_creates_organic_crop_impact(self):
+        self.app.state.fertilizer = 1
+        self.app.player.update(*main.PLOT_RECTS[0].center)
+        event = pygame.event.Event(
+            pygame.KEYDOWN,
+            key=pygame.K_f,
+            scancode=pygame.KSCAN_F,
+            mod=0,
+        )
+
+        self.app.handle_key(event)
+
+        self.assertEqual(self.app.state.fertilizer, 0)
+        self.assertTrue(self.app.state.plots[0].fertilized)
+        self.assertTrue(self.app.action_effects)
+
+    def test_blender_starts_three_second_grinding_sound(self):
+        order = CustomerOrder(3, 1, 1, 1)
+        self.app.state.customers_waiting = 1
+        self.app.state.customer_orders = [order]
+        self.app.state.blueberries = 3
+        self.app.state.honey = self.app.state.milk = self.app.state.ice = 1
+        self.app.blender_mix = dict(order.recipe)
+        self.app.blender_sound = object()
+        self.app.blender_channel = Mock()
+
+        self.app.finish_blender_mix()
+
+        self.assertEqual(self.app.overlay, "blending")
+        self.assertEqual(self.app.blender_animation_remaining, main.BLENDER_DURATION)
+        self.app.blender_channel.play.assert_called_once_with(self.app.blender_sound)
+        self.assertLessEqual(self.app.current_bgm_volume, main.BGM_DUCK_VOLUME)
+
+    def test_fishing_cast_bite_catch_and_shop_sale_flow(self):
+        self.app.state.money = main.FISHING_ROD_COST
+        self.app.buy_item("fishing_rod")
+        self.assertEqual(self.app.state.fishing_rod, 1)
+        self.app.player.update(main.POND.left - 25, main.POND.centery)
+        controlled_rng = Mock()
+        controlled_rng.uniform.side_effect = lambda start, end: (start + end) / 2
+        controlled_rng.random.return_value = 0.01
+        controlled_rng.randint.side_effect = lambda start, end: (start + end) // 2
+        self.app.rng = controlled_rng
+
+        self.app.interact()
+        self.assertEqual(self.app.fishing_phase, "waiting")
+        self.app.fishing_phase = "bite"
+        self.app.interact()
+
+        self.assertEqual(self.app.fishing_phase, "idle")
+        self.assertEqual(self.app.state.carp, 1)
+        self.assertIn(("carp", 1), self.app.state.bag_stacks())
+        self.app.overlay = "fish_market"
+        sale_event = pygame.event.Event(
+            pygame.KEYDOWN,
+            key=pygame.K_1,
+            scancode=0,
+            mod=0,
+        )
+        self.app.handle_key(sale_event)
+        self.assertEqual(self.app.state.carp, 0)
+        self.app.draw()
+
+    def test_farmhouse_furniture_shop_places_one_design_of_each_item(self):
+        self.app.state.money = sum(main.FURNITURE_COSTS.values())
+        self.app.player.update(main.HOUSE.centerx, main.HOUSE.bottom + 37)
+        self.app.interact()
+        self.assertEqual(self.app.overlay, "home")
+        for key_number in range(pygame.K_1, pygame.K_6):
+            self.app.handle_key(pygame.event.Event(
+                pygame.KEYDOWN,
+                key=key_number,
+                scancode=0,
+                mod=0,
+            ))
+        self.assertEqual(self.app.state.furniture_owned, list(main.FURNITURE_COSTS))
+        self.app.draw()
+
+    def test_tree_spacing_and_side_back_foot_motion_are_clear(self):
+        closest_pair = min(
+            math.dist(first, second)
+            for index, first in enumerate(main.TREE_POSITIONS)
+            for second in main.TREE_POSITIONS[index + 1:]
+        )
+        self.assertGreaterEqual(closest_pair, 300)
+        self.app.is_moving = True
+        for direction in ("left", "right", "up"):
+            self.app.direction = direction
+            self.app.walk_phase = 1.2
+            with patch.object(self.app, "draw_walking_feet", wraps=self.app.draw_walking_feet) as feet:
+                self.app.draw_character()
+            feet.assert_called_once()
 
     def test_facility_can_be_built_and_collected_from_world_interaction(self):
         self.app.state.money = 10_000

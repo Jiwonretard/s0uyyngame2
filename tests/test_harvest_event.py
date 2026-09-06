@@ -300,42 +300,37 @@ class HarvestEventTests(unittest.TestCase):
         self.app.draw_celestial_cycle()
         self.assertGreater(sum(self.app.screen.get_at(sun[1:3])[:3]), 0)
 
-    def test_e_installs_three_thousand_coin_streetlight_with_night_glow(self):
+    def test_removed_lamps_have_no_signs_interactions_or_night_glow(self):
         self.assertEqual(len(main.STREETLIGHT_POSITIONS), main.STREETLIGHT_COUNT)
         self.assertEqual(len(main.STREETLIGHT_SITE_LABELS), main.STREETLIGHT_COUNT)
-        self.assertEqual(
-            main.STREETLIGHT_SITE_LABELS,
-            ("농장집", "블루베리 밭", "벌통·시설", "상점", "생과 시장", "스무디 판매대"),
-        )
-        lamp_index = 0
-        lamp_point = main.STREETLIGHT_POSITIONS[lamp_index]
-        self.app.state.money = main.STREETLIGHT_COST
-        self.app.player.update(*lamp_point)
-        target = self.app.nearest_interaction()
-        self.assertIsNotNone(target)
-        self.assertEqual(target["kind"], "streetlight")
-        self.assertIn("농장집", target["prompt"])
-        self.assertIn("3,000", target["prompt"])
-
-        event = pygame.event.Event(
-            pygame.KEYDOWN,
-            key=pygame.K_e,
-            scancode=pygame.KSCAN_E,
-            mod=0,
-        )
-        self.app.handle_key(event)
-
-        self.assertTrue(self.app.state.streetlights_installed[lamp_index])
-        self.assertEqual(self.app.state.money, 0)
-
         self.app.state.game_elapsed_seconds = main.DAY_SECONDS * 0.75
-        self.app._snap_camera()
-        self.app.screen.fill((150, 150, 150))
-        self.app.draw_lighting()
-        lamp_screen = self.app.world_to_screen((lamp_point[0] + 25, lamp_point[1] - 82))
-        lit_pixel = self.app.screen.get_at(lamp_screen)[:3]
-        dark_pixel = self.app.screen.get_at((10, 10))[:3]
-        self.assertGreater(sum(lit_pixel), sum(dark_pixel))
+        self.app.state.streetlights_installed = [True] * 8
+        previous_sites = (
+            (500, 355), (970, 820), (410, 1135), (1640, 475),
+            (1425, 1215), (2010, 1090), (1550, 630), (1525, 50),
+        )
+        for point in previous_sites:
+            with self.subTest(point=point):
+                self.app.player.update(*point)
+                self.app._snap_camera()
+                target = self.app.nearest_interaction()
+                self.assertTrue(target is None or target["kind"] != "streetlight")
+                self.app.screen.fill((150, 150, 150))
+                self.app.draw_streetlights()
+                self.app.draw_lighting()
+                # Flat ground must receive uniform night shading, even if an
+                # old in-memory state still contains installed lamp flags.
+                self.assertEqual(
+                    self.app.screen.get_at((640, 260)),
+                    self.app.screen.get_at((20, 620)),
+                )
+        self.app.state.money = 50_000
+        self.app.state.berries_harvested = 10
+        self.app.state.blueberries = 10
+        self.assertNotIn("가로등", self.app.current_objective())
+        with patch.object(self.app, "text", wraps=self.app.text) as draw_text:
+            self.app.draw_help_overlay()
+        self.assertFalse(any("가로등" in call.args[0] for call in draw_text.call_args_list))
 
     def test_app_save_restores_exact_day_and_progress(self):
         self.assertEqual(main.DAY_SECONDS, 24 * 60)

@@ -53,7 +53,8 @@ REPUTATION_THRESHOLDS = (0, 8, 25, 55, 95)
 MAX_FACILITY_LEVEL = 3
 FACILITY_KEYS = ("beehive", "ice_maker", "cow_barn")
 STREETLIGHT_COST = 3_000
-STREETLIGHT_COUNT = 6
+# No active sites until the player provides a new placement reference.
+STREETLIGHT_COUNT = 0
 FACILITY_CONFIG = {
     "beehive": {
         "name": "벌통",

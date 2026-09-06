@@ -213,46 +213,33 @@ class GameStateTests(unittest.TestCase):
         self.assertEqual(state.money, 0)
         self.assertEqual(state.land_cost, second_cost + LAND_COST_STEP)
 
-    def test_streetlights_cost_three_thousand_and_persist(self):
+    def test_removed_streetlight_sites_cannot_charge_money(self):
         state = GameState.new(now=100.0)
-        self.assertEqual(STREETLIGHT_COST, 3_000)
-        self.assertEqual(len(state.streetlights_installed), STREETLIGHT_COUNT)
-        self.assertFalse(any(state.streetlights_installed))
         state.money = STREETLIGHT_COST
+        for index in range(8):
+            ok, _message = state.buy_streetlight(index)
+            self.assertFalse(ok)
+        self.assertEqual(state.money, STREETLIGHT_COST)
+        self.assertEqual(state.daily_money_spent, 0)
+        self.assertEqual(state.streetlights_installed, [])
 
-        ok, message = state.buy_streetlight(1)
-
-        self.assertTrue(ok)
-        self.assertIn("설치", message)
-        self.assertEqual(state.money, 0)
-        self.assertEqual(state.daily_money_spent, STREETLIGHT_COST)
-        self.assertTrue(state.streetlights_installed[1])
-        ok, _message = state.buy_streetlight(1)
-        self.assertFalse(ok)
-
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "save.json"
-            state.save(path)
-            loaded = GameState.load(path, now=101.0)
-        self.assertEqual(
-            loaded.streetlights_installed,
-            [False, True, False, False, False, False],
-        )
-
-    def test_three_old_streetlights_are_preserved_when_sites_expand_to_six(self):
+    def test_old_saved_lamps_do_not_return_after_sites_are_removed(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "save.json"
             state = GameState.new(now=100.0)
+            state.money = 4_567
+            state.game_elapsed_seconds = 2.5 * GAME_DAY_SECONDS
             data = state.to_dict()
-            data["streetlights_installed"] = [True, False, True]
-            path.write_text(json.dumps(data), encoding="utf-8")
-
-            loaded = GameState.load(path, now=101.0)
-
-        self.assertEqual(
-            loaded.streetlights_installed,
-            [True, False, True, False, False, False],
-        )
+            for previous in ([True, False, True], [True] * 6, [True] * 8):
+                with self.subTest(previous=previous):
+                    data["streetlights_installed"] = previous
+                    path.write_text(json.dumps(data), encoding="utf-8")
+                    loaded = GameState.load(path, now=101.0)
+                    self.assertEqual(loaded.streetlights_installed, [])
+                    self.assertEqual(loaded.money, 4_567)
+                    self.assertEqual(loaded.current_day, state.current_day)
+                    loaded.save(path)
+                    self.assertEqual(GameState.load(path).streetlights_installed, [])
 
     def test_tree_drop_probabilities_and_daily_shake_limit(self):
         self.assertEqual(

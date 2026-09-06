@@ -113,24 +113,10 @@ FACILITY_RECTS = {
     "cow_barn": COW_BARN,
 }
 
-# Lamp sites are distributed across the whole village rather than clustered by
-# the blender. Each one is purchased separately and lights its own area.
-STREETLIGHT_POSITIONS = (
-    (500, 355),
-    (970, 820),
-    (410, 1135),
-    (1640, 475),
-    (1425, 1215),
-    (2010, 1090),
-)
-STREETLIGHT_SITE_LABELS = (
-    "농장집",
-    "블루베리 밭",
-    "벌통·시설",
-    "상점",
-    "생과 시장",
-    "스무디 판매대",
-)
+# All previous sites were removed. New locations will come from the user's
+# next reference photos; no lamps, site signs, or light pools are active.
+STREETLIGHT_POSITIONS: tuple[tuple[int, int], ...] = ()
+STREETLIGHT_SITE_LABELS: tuple[str, ...] = ()
 
 CUSTOMER_QUEUE_POINTS = [
     (1840, 1322),
@@ -2155,11 +2141,6 @@ class GameApp:
             return "익은 블루베리 나무 가까이 가서 E로 수확하세요."
         if state.blueberries < 3 and state.smoothies_sold == 0:
             return "밭을 돌보거나 남쪽 시장에서 생과를 팔아 보세요."
-        if (
-            not all(state.streetlights_installed)
-            and state.money >= STREETLIGHT_COST
-        ):
-            return "길가의 가로등 부지에서 E를 눌러 밤길을 밝혀 보세요."
         if state.active_plots < MAX_PLOTS and state.money >= state.land_cost:
             return f"확장 간판에서 다음 텃밭을 {state.land_cost:,}코인에 살 수 있어요."
         order = state.current_order
@@ -2977,7 +2958,7 @@ class GameApp:
             ("생산 시설", "남쪽 시설 앞 E", "벌통·제빙기·젖소 축사를 짓고 생산품을 받아요."),
             ("손님·평판", "정확한 주문 판매", "평판 등급을 올리면 시설과 VIP 손님이 해금돼요."),
             ("제조·판매", "블렌더 E → +/- · 5/6", "주문을 맞추고 희귀 재료를 골라 3초 동안 갈아요."),
-            ("낮·밤·축제", "가로등 부지 E", "해와 달이 움직여요. 3,000코인 가로등으로 밤길을 밝히세요."),
+            ("낮·밤·축제", "하루 24분", "해와 달이 움직이고, 여름 마지막 날에는 축제가 열려요."),
         ]
         y = 176
         for title, control, body in rows:

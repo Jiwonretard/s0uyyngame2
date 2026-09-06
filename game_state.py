@@ -1133,35 +1133,50 @@ class GameState:
         self.furniture_layout.pop(key)
         return True, f"{FURNITURE_LABELS[key]}을(를) 보관함에 넣었어요."
 
+    def sell_blueberry_batch(
+        self,
+        key: str,
+        amount: int | None = 1,
+        day: int | None = None,
+    ) -> tuple[bool, str]:
+        products = {
+            "blueberries": ("블루베리", self.raw_blueberry_price(day)),
+            "golden_blueberries": ("황금 블루베리", GOLDEN_BLUEBERRY_PRICE),
+            "organic_blueberries": ("유기농 블루베리", ORGANIC_BLUEBERRY_PRICE),
+        }
+        if key not in products:
+            return False, "판매할 수 없는 물건이에요."
+        available = max(0, int(getattr(self, key)))
+        if available < 1:
+            return False, f"판매할 {products[key][0]}가 없어요."
+        if amount is None:
+            quantity = available
+        else:
+            requested = int(amount)
+            if requested < 1:
+                return False, "판매 수량은 1개 이상이어야 해요."
+            quantity = min(requested, available)
+
+        label, unit_price = products[key]
+        total = unit_price * quantity
+        setattr(self, key, available - quantity)
+        self.money += total
+        self.daily_money_earned += total
+        if key == "golden_blueberries":
+            self.golden_blueberries_sold += quantity
+        else:
+            self.berries_sold += quantity
+            self.daily_blueberries_sold += quantity
+        return True, f"{label} {quantity}개를 팔아 {total:,}코인을 벌었어요."
+
     def sell_blueberry(self, day: int | None = None) -> tuple[bool, str]:
-        if self.blueberries < 1:
-            return False, "판매할 블루베리가 없어요."
-        price = self.raw_blueberry_price(day)
-        self.blueberries -= 1
-        self.money += price
-        self.berries_sold += 1
-        self.daily_blueberries_sold += 1
-        self.daily_money_earned += price
-        return True, f"블루베리 1개를 팔아 {price}코인을 벌었어요."
+        return self.sell_blueberry_batch("blueberries", 1, day)
 
     def sell_golden_blueberry(self) -> tuple[bool, str]:
-        if self.golden_blueberries < 1:
-            return False, "판매할 황금 블루베리가 없어요."
-        self.golden_blueberries -= 1
-        self.money += GOLDEN_BLUEBERRY_PRICE
-        self.golden_blueberries_sold += 1
-        self.daily_money_earned += GOLDEN_BLUEBERRY_PRICE
-        return True, f"황금 블루베리 1개를 팔아 {GOLDEN_BLUEBERRY_PRICE}코인을 벌었어요!"
+        return self.sell_blueberry_batch("golden_blueberries")
 
     def sell_organic_blueberry(self) -> tuple[bool, str]:
-        if self.organic_blueberries < 1:
-            return False, "판매할 유기농 블루베리가 없어요."
-        self.organic_blueberries -= 1
-        self.money += ORGANIC_BLUEBERRY_PRICE
-        self.berries_sold += 1
-        self.daily_blueberries_sold += 1
-        self.daily_money_earned += ORGANIC_BLUEBERRY_PRICE
-        return True, f"유기농 블루베리 1개를 팔아 {ORGANIC_BLUEBERRY_PRICE}코인을 벌었어요."
+        return self.sell_blueberry_batch("organic_blueberries")
 
     def make_smoothie(
         self,

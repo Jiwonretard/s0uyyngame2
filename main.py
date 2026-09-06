@@ -213,6 +213,8 @@ STATIC_OBSTACLES = (
 
 FISH_KEYS = tuple(FISH_PRICES)
 FURNITURE_KEYS = tuple(FURNITURE_COSTS)
+MARKET_PRODUCT_KEYS = ("blueberries", "golden_blueberries", "organic_blueberries")
+MARKET_SALE_AMOUNTS = (1, 10, None)
 SHOP_CLOSE_RECT = pygame.Rect(765, 578, 190, 48)
 SHOP_FISH_BUTTON = pygame.Rect(325, 578, 260, 48)
 HUD_LEFT_RECT = pygame.Rect(53, 8, 360, 52)
@@ -240,6 +242,15 @@ def furniture_card_rect(index: int) -> pygame.Rect:
 
 def fish_sale_card_rect(index: int) -> pygame.Rect:
     return pygame.Rect(195 + index * 225, 260, 205, 235)
+
+
+def market_card_rect(index: int) -> pygame.Rect:
+    return pygame.Rect(250 + index * 270, 275, 240, 170)
+
+
+def market_sale_button_rect(product_index: int, amount_index: int) -> pygame.Rect:
+    card = market_card_rect(product_index)
+    return pygame.Rect(card.x + 12 + amount_index * 74, card.y + 132, 68, 30)
 
 
 def find_korean_font() -> str | None:
@@ -1456,16 +1467,12 @@ class GameApp:
         if ok:
             self.save()
 
-    def sell_market_item(self, key: str) -> None:
-        if key == "golden_blueberries":
-            ok, message = self.state.sell_golden_blueberry()
-            color = GOLD
-        elif key == "organic_blueberries":
-            ok, message = self.state.sell_organic_blueberry()
-            color = LEAF
-        else:
-            ok, message = self.state.sell_blueberry()
-            color = BLUEBERRY
+    def sell_market_item(self, key: str, amount: int | None = 1) -> None:
+        ok, message = self.state.sell_blueberry_batch(key, amount)
+        color = {
+            "golden_blueberries": GOLD,
+            "organic_blueberries": LEAF,
+        }.get(key, BLUEBERRY)
         self.notify(message, not ok)
         if ok:
             self.spawn_particles((MARKET.centerx, MARKET.bottom + 20), color, 18)
@@ -1819,12 +1826,17 @@ class GameApp:
                 self.upgrade_selected_facility()
             return
         if self.overlay == "market":
+            amount = 1
+            if event.mod & (pygame.KMOD_CTRL | pygame.KMOD_META):
+                amount = None
+            elif event.mod & pygame.KMOD_SHIFT:
+                amount = 10
             if event.key == pygame.K_1:
-                self.sell_market_item("blueberries")
+                self.sell_market_item("blueberries", amount)
             elif event.key == pygame.K_2:
-                self.sell_market_item("golden_blueberries")
+                self.sell_market_item("golden_blueberries", amount)
             elif event.key == pygame.K_3:
-                self.sell_market_item("organic_blueberries")
+                self.sell_market_item("organic_blueberries", amount)
             elif self.is_interaction_key(event):
                 self.overlay = None
             return
@@ -2023,11 +2035,11 @@ class GameApp:
                     return
             return
         if self.overlay == "market":
-            products = ("blueberries", "golden_blueberries", "organic_blueberries")
-            for index, key in enumerate(products):
-                if pygame.Rect(250 + index * 270, 275, 240, 170).collidepoint(position):
-                    self.sell_market_item(key)
-                    return
+            for product_index, key in enumerate(MARKET_PRODUCT_KEYS):
+                for amount_index, amount in enumerate(MARKET_SALE_AMOUNTS):
+                    if market_sale_button_rect(product_index, amount_index).collidepoint(position):
+                        self.sell_market_item(key, amount)
+                        return
             if pygame.Rect(510, 520, 260, 52).collidepoint(position):
                 self.overlay = None
             return
@@ -3136,28 +3148,29 @@ class GameApp:
         pygame.draw.rect(self.screen, CREAM, card.inflate(-18, -18))
         self.text("블루베리 생과 시장", 32, BLUEBERRY_DARK,
                   card.centerx, 145, center=True)
-        self.text("일반·황금·유기농 블루베리를 한 알씩 바로 판매할 수 있어요.",
+        self.text("각 종류를 1개, 10개 또는 보유한 만큼 전부 판매할 수 있어요.",
                   15, MUTED, card.centerx, 188, center=True)
 
         products = [
-            (pygame.Rect(250, 275, 240, 170), "blueberries", "일반 블루베리",
+            (market_card_rect(0), "blueberries", "일반 블루베리",
              self.state.raw_blueberry_price(), self.state.blueberries, BLUEBERRY),
-            (pygame.Rect(520, 275, 240, 170), "golden_blueberries", "황금 블루베리",
+            (market_card_rect(1), "golden_blueberries", "황금 블루베리",
              GOLDEN_BLUEBERRY_PRICE, self.state.golden_blueberries, GOLD),
-            (pygame.Rect(790, 275, 240, 170), "organic_blueberries", "유기농 블루베리",
+            (market_card_rect(2), "organic_blueberries", "유기농 블루베리",
              ORGANIC_BLUEBERRY_PRICE, self.state.organic_blueberries, LEAF),
         ]
-        for index, (rect, key, label, price, amount, color) in enumerate(products, start=1):
+        for product_index, (rect, key, label, price, amount, color) in enumerate(products):
             rounded_rect(self.screen, rect, (255, 244, 207), 14, WOOD_DARK, 4)
             self.draw_item_icon(key, (rect.centerx, rect.y + 48))
-            self.text(f"[{index}] {label}", 18, INK,
+            self.text(f"[{product_index + 1}] {label}", 18, INK,
                       rect.centerx, rect.y + 92, center=True)
-            self.text(f"보유 {amount}개", 14, MUTED,
+            self.text(f"보유 {amount:,}개 · 개당 {price:,}코인", 13, MUTED,
                       rect.centerx, rect.y + 119, center=True)
-            price_badge = pygame.Rect(rect.centerx - 76, rect.y + 137, 152, 29)
-            rounded_rect(self.screen, price_badge, color, 8, WOOD_DARK, 2)
-            self.text(f"1개 판매 +{price}코인", 14, WHITE,
-                      price_badge.centerx, price_badge.centery, center=True)
+            for amount_index, button_label in enumerate(("1개", "10개", "전부")):
+                sale_button = market_sale_button_rect(product_index, amount_index)
+                rounded_rect(self.screen, sale_button, color, 7, WOOD_DARK, 2)
+                self.text(button_label, 13, WHITE,
+                          sale_button.centerx, sale_button.centery, center=True)
 
         close = pygame.Rect(510, 520, 260, 52)
         rounded_rect(self.screen, close, BLUEBERRY, 10, WOOD_DARK, 4)

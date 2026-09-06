@@ -374,6 +374,51 @@ class GameStateTests(unittest.TestCase):
         self.assertEqual(state.money, 0)
         self.assertEqual(state.land_cost, second_cost + LAND_COST_STEP)
 
+    def test_market_can_sell_ten_or_every_remaining_blueberry(self):
+        state = GameState.new(now=100.0)
+        state.blueberries = 14
+        starting_money = state.money
+        price = state.raw_blueberry_price()
+
+        ok, message = state.sell_blueberry_batch("blueberries", 10)
+        self.assertTrue(ok)
+        self.assertIn("10개", message)
+        self.assertEqual(state.blueberries, 4)
+        self.assertEqual(state.money, starting_money + price * 10)
+        self.assertEqual(state.berries_sold, 10)
+        self.assertEqual(state.daily_blueberries_sold, 10)
+
+        ok, message = state.sell_blueberry_batch("blueberries", None)
+        self.assertTrue(ok)
+        self.assertIn("4개", message)
+        self.assertEqual(state.blueberries, 0)
+        self.assertEqual(state.money, starting_money + price * 14)
+        self.assertEqual(state.berries_sold, 14)
+        self.assertEqual(state.daily_blueberries_sold, 14)
+
+    def test_ten_sale_uses_remaining_amount_and_bulk_special_sales_update_stats(self):
+        state = GameState.new(now=100.0)
+        state.organic_blueberries = 6
+        state.golden_blueberries = 3
+        starting_money = state.money
+
+        ok, message = state.sell_blueberry_batch("organic_blueberries", 10)
+        self.assertTrue(ok)
+        self.assertIn("6개", message)
+        self.assertEqual(state.organic_blueberries, 0)
+        self.assertEqual(state.berries_sold, 6)
+        self.assertEqual(state.daily_blueberries_sold, 6)
+
+        ok, message = state.sell_blueberry_batch("golden_blueberries", None)
+        self.assertTrue(ok)
+        self.assertIn("3개", message)
+        self.assertEqual(state.golden_blueberries, 0)
+        self.assertEqual(state.golden_blueberries_sold, 3)
+        self.assertEqual(
+            state.money,
+            starting_money + ORGANIC_BLUEBERRY_PRICE * 6 + GOLDEN_BLUEBERRY_PRICE * 3,
+        )
+
     def test_streetlights_cost_three_thousand_and_persist(self):
         state = GameState.new(now=100.0)
         self.assertEqual(state.streetlights_installed, [False] * STREETLIGHT_COUNT)

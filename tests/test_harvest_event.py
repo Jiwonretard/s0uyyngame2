@@ -265,6 +265,40 @@ class HarvestEventTests(unittest.TestCase):
         self.assertEqual(self.app.state.golden_blueberries, 0)
         self.assertEqual(self.app.state.money, starting_money + GOLDEN_BLUEBERRY_PRICE)
 
+    def test_market_keyboard_sells_ten_then_all_remaining_blueberries(self):
+        self.app.overlay = "market"
+        self.app.state.blueberries = 14
+        starting_money = self.app.state.money
+        price = self.app.state.raw_blueberry_price()
+
+        sell_ten = pygame.event.Event(
+            pygame.KEYDOWN,
+            key=pygame.K_1,
+            scancode=pygame.KSCAN_1,
+            mod=pygame.KMOD_SHIFT,
+        )
+        self.app.handle_key(sell_ten)
+        self.assertEqual(self.app.state.blueberries, 4)
+
+        sell_all = pygame.event.Event(
+            pygame.KEYDOWN,
+            key=pygame.K_1,
+            scancode=pygame.KSCAN_1,
+            mod=pygame.KMOD_META,
+        )
+        self.app.handle_key(sell_all)
+        self.assertEqual(self.app.state.blueberries, 0)
+        self.assertEqual(self.app.state.money, starting_money + price * 14)
+
+    def test_market_buttons_sell_ten_and_all(self):
+        self.app.overlay = "market"
+        self.app.state.golden_blueberries = 15
+
+        self.app.handle_click(main.market_sale_button_rect(1, 1).center)
+        self.assertEqual(self.app.state.golden_blueberries, 5)
+        self.app.handle_click(main.market_sale_button_rect(1, 2).center)
+        self.assertEqual(self.app.state.golden_blueberries, 0)
+
     def test_calendar_uses_active_play_time_and_pauses_in_menus(self):
         self.app.state.started_at = -1_000_000.0
         self.app.state.game_elapsed_seconds = 0.0

@@ -14,7 +14,7 @@ import time
 from typing import Callable
 
 
-SAVE_VERSION = 4
+SAVE_VERSION = 5
 LEGACY_GAME_DAY_SECONDS = 720.0
 GAME_DAY_SECONDS = 24.0 * 60.0
 STARTING_PLOTS = 4
@@ -215,6 +215,22 @@ FURNITURE_LABELS = {
     "desk": "책상",
     "lantern": "랜턴",
     "flowerpot": "화분",
+}
+FURNITURE_GRID_COLUMNS = 35
+FURNITURE_GRID_ROWS = 10
+FURNITURE_FOOTPRINTS = {
+    "bed": (5, 3),
+    "drawer": (2, 2),
+    "desk": (4, 2),
+    "lantern": (2, 2),
+    "flowerpot": (2, 2),
+}
+DEFAULT_FURNITURE_LAYOUT = {
+    "bed": [1, 5, 0],
+    "drawer": [31, 5, 0],
+    "desk": [14, 6, 0],
+    "lantern": [28, 6, 0],
+    "flowerpot": [10, 7, 0],
 }
 SPECIAL_SMOOTHIE_BONUS = 100
 TREE_DROP_TABLE = (
@@ -469,6 +485,7 @@ class GameState:
     trees_shaken: int = 0
     fish_caught: int = 0
     furniture_owned: list[str] = field(default_factory=list)
+    furniture_layout: dict[str, list[int]] = field(default_factory=dict)
     tree_shaken_days: dict[str, int] = field(default_factory=dict)
     facility_levels: dict[str, int] = field(
         default_factory=lambda: {key: 0 for key in FACILITY_KEYS}
@@ -1043,7 +1060,78 @@ class GameState:
         self.money -= cost
         self.daily_money_spent += cost
         self.furniture_owned.append(key)
-        return True, f"{FURNITURE_LABELS[key]}을(를) 구입해 집에 배치했어요."
+        return True, (
+            f"{FURNITURE_LABELS[key]}을(를) 구입해 보관함에 넣었어요. "
+            "G를 눌러 배치해 보세요."
+        )
+
+    @staticmethod
+    def furniture_footprint(key: str, rotation: int = 0) -> tuple[int, int]:
+        width, height = FURNITURE_FOOTPRINTS[key]
+        if int(rotation) % 2:
+            return height, width
+        return width, height
+
+    def can_place_furniture(
+        self,
+        key: str,
+        column: int,
+        row: int,
+        rotation: int = 0,
+    ) -> bool:
+        if key not in self.furniture_owned or key not in FURNITURE_FOOTPRINTS:
+            return False
+        width, height = self.furniture_footprint(key, rotation)
+        if (
+            column < 0
+            or row < 0
+            or column + width > FURNITURE_GRID_COLUMNS
+            or row + height > FURNITURE_GRID_ROWS
+        ):
+            return False
+        candidate = (column, row, width, height)
+        for other_key, raw_layout in self.furniture_layout.items():
+            if other_key == key or other_key not in FURNITURE_FOOTPRINTS:
+                continue
+            other_column, other_row, other_rotation = raw_layout
+            other_width, other_height = self.furniture_footprint(
+                other_key,
+                other_rotation,
+            )
+            separated = (
+                candidate[0] + candidate[2] <= other_column
+                or other_column + other_width <= candidate[0]
+                or candidate[1] + candidate[3] <= other_row
+                or other_row + other_height <= candidate[1]
+            )
+            if not separated:
+                return False
+        return True
+
+    def place_furniture(
+        self,
+        key: str,
+        column: int,
+        row: int,
+        rotation: int = 0,
+    ) -> tuple[bool, str]:
+        column = int(column)
+        row = int(row)
+        rotation = int(rotation) % 2
+        if key not in self.furniture_owned:
+            return False, "먼저 가구를 구입해 주세요."
+        if not self.can_place_furniture(key, column, row, rotation):
+            return False, "다른 가구와 겹치거나 방 바깥이라 놓을 수 없어요."
+        self.furniture_layout[key] = [column, row, rotation]
+        return True, f"{FURNITURE_LABELS[key]}을(를) 원하는 위치에 놓았어요."
+
+    def store_furniture(self, key: str) -> tuple[bool, str]:
+        if key not in self.furniture_owned:
+            return False, "보유하지 않은 가구예요."
+        if key not in self.furniture_layout:
+            return False, "이 가구는 이미 보관함에 있어요."
+        self.furniture_layout.pop(key)
+        return True, f"{FURNITURE_LABELS[key]}을(를) 보관함에 넣었어요."
 
     def sell_blueberry(self, day: int | None = None) -> tuple[bool, str]:
         if self.blueberries < 1:
@@ -1248,7 +1336,7 @@ class GameState:
         try:
             raw = json.loads(save_path.read_text(encoding="utf-8"))
             save_version = int(raw.get("save_version", 1))
-            if save_version not in (1, 2, 3, SAVE_VERSION):
+            if save_version not in (1, 2, 3, 4, SAVE_VERSION):
                 raise ValueError("지원하지 않는 저장 파일 버전입니다.")
             had_tracked_day = "tracked_day" in raw
             saved_calendar_day = raw.pop("calendar_day", None)
@@ -1281,6 +1369,7 @@ class GameState:
             ) * GAME_DAY_SECONDS
             allowed = {field_name for field_name in cls.__dataclass_fields__}
             had_rod_durability = "fishing_rod_durability" in raw
+            had_furniture_layout = "furniture_layout" in raw
             state = cls(**{key: value for key, value in raw.items() if key in allowed})
             state.active_plots = max(STARTING_PLOTS, min(MAX_PLOTS, int(state.active_plots)))
             state.game_elapsed_seconds = max(0.0, float(state.game_elapsed_seconds))
@@ -1317,6 +1406,36 @@ class GameState:
                 key for key in FURNITURE_COSTS
                 if key in raw_furniture
             ]
+            raw_layout = (
+                state.furniture_layout
+                if isinstance(state.furniture_layout, dict)
+                else {}
+            )
+            state.furniture_layout = {}
+            for furniture_key in state.furniture_owned:
+                candidate = (
+                    raw_layout.get(furniture_key)
+                    if had_furniture_layout
+                    else DEFAULT_FURNITURE_LAYOUT.get(furniture_key)
+                )
+                if not isinstance(candidate, (list, tuple)) or len(candidate) != 3:
+                    continue
+                try:
+                    column, row, rotation = (int(value) for value in candidate)
+                except (TypeError, ValueError):
+                    continue
+                rotation %= 2
+                if state.can_place_furniture(
+                    furniture_key,
+                    column,
+                    row,
+                    rotation,
+                ):
+                    state.furniture_layout[furniture_key] = [
+                        column,
+                        row,
+                        rotation,
+                    ]
             state.golden_blueberries_sold = max(0, int(state.golden_blueberries_sold))
             state.trees_shaken = max(0, int(state.trees_shaken))
             raw_tree_days = state.tree_shaken_days if isinstance(state.tree_shaken_days, dict) else {}

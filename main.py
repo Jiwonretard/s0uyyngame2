@@ -30,6 +30,8 @@ from game_state import (
     FISHING_ROD_MAX_DURABILITY,
     FISH_PRICES,
     FURNITURE_COSTS,
+    FURNITURE_GRID_COLUMNS,
+    FURNITURE_GRID_ROWS,
     FURNITURE_LABELS,
     GAME_DAY_SECONDS,
     GOLDEN_BLUEBERRY_PRICE,
@@ -74,6 +76,14 @@ INGREDIENT_SOURCE_PATHS = {
     "blueberries": BASE_DIR / "assets" / "ingredient_blueberry_source.png",
     "ice": BASE_DIR / "assets" / "ingredient_ice_source.png",
     "honey": BASE_DIR / "assets" / "ingredient_honey_source.png",
+}
+FISH_ASSET_PATHS = {
+    key: BASE_DIR / "assets" / "fish" / f"{key}.png"
+    for key in FISH_PRICES
+}
+FURNITURE_ASSET_PATHS = {
+    key: BASE_DIR / "assets" / "furniture" / f"{key}.png"
+    for key in FURNITURE_COSTS
 }
 BGM_NORMAL_VOLUME = 0.28
 BGM_DUCK_VOLUME = 0.055
@@ -193,10 +203,17 @@ FURNITURE_KEYS = tuple(FURNITURE_COSTS)
 SHOP_CLOSE_RECT = pygame.Rect(765, 578, 190, 48)
 SHOP_FISH_BUTTON = pygame.Rect(325, 578, 260, 48)
 HUD_HELP_RECT = pygame.Rect(1193, 15, 66, 25)
+HOME_BUILD_AREA = pygame.Rect(80, 155, 1120, 320)
+HOME_GRID_CELL = HOME_BUILD_AREA.width // FURNITURE_GRID_COLUMNS
+HOME_EDIT_BUTTON = pygame.Rect(865, 96, 160, 42)
+HOME_EXIT_BUTTON = pygame.Rect(1040, 96, 160, 42)
+HOME_ROTATE_BUTTON = pygame.Rect(845, 490, 110, 42)
+HOME_STORE_BUTTON = pygame.Rect(965, 490, 110, 42)
+HOME_DONE_BUTTON = pygame.Rect(1085, 490, 110, 42)
 
 
 def furniture_card_rect(index: int) -> pygame.Rect:
-    return pygame.Rect(115 + index * 210, 535, 190, 115)
+    return pygame.Rect(115 + index * 210, 548, 190, 112)
 
 
 def fish_sale_card_rect(index: int) -> pygame.Rect:
@@ -448,7 +465,15 @@ class GameApp:
         self.ingredient_icons: dict[str, pygame.Surface] = {}
         self.ingredient_icons_small: dict[str, pygame.Surface] = {}
         self.ingredient_icon_error = ""
+        self.fish_icons: dict[str, pygame.Surface] = {}
+        self.fish_icons_small: dict[str, pygame.Surface] = {}
+        self.furniture_sprites: dict[str, pygame.Surface] = {}
+        self.decor_asset_error = ""
+        self.home_edit_mode = False
+        self.selected_furniture: str | None = None
+        self.home_rotation = 0
         self._load_ingredient_icons()
+        self._load_decor_assets()
         self._load_audio()
         self.player_frames: dict[str, list[pygame.Surface]] = {}
         self.player_sprite_error = ""
@@ -607,6 +632,25 @@ class GameApp:
             self.ingredient_icons_small.clear()
             self.ingredient_icon_error = str(exc)
 
+    def _load_decor_assets(self) -> None:
+        """Load the original PNG catalogue used by fishing and home decorating."""
+        errors: list[str] = []
+        for key, path in FISH_ASSET_PATHS.items():
+            try:
+                sprite = pygame.image.load(str(path)).convert_alpha()
+                self.fish_icons[key] = self._scale_icon_to_cell(sprite, 68)
+                self.fish_icons_small[key] = self._scale_icon_to_cell(sprite, 38)
+            except (pygame.error, FileNotFoundError, ValueError) as exc:
+                errors.append(f"{path.name}: {exc}")
+        for key, path in FURNITURE_ASSET_PATHS.items():
+            try:
+                sprite = pygame.image.load(str(path)).convert_alpha()
+                bounds = sprite.get_bounding_rect(min_alpha=1)
+                self.furniture_sprites[key] = sprite.subsurface(bounds).copy()
+            except (pygame.error, FileNotFoundError, ValueError) as exc:
+                errors.append(f"{path.name}: {exc}")
+        self.decor_asset_error = "; ".join(errors)
+
     def draw_item_icon(
         self,
         key: str,
@@ -614,6 +658,12 @@ class GameApp:
         *,
         small: bool = False,
     ) -> bool:
+        if key in FISH_KEYS:
+            icons = self.fish_icons_small if small else self.fish_icons
+            icon = icons.get(key)
+            if icon is not None:
+                self.screen.blit(icon, icon.get_rect(center=center))
+                return True
         if key == "coins":
             radius = 13 if small else 20
             pygame.draw.circle(self.screen, WOOD_DARK, center, radius + 3)
@@ -1266,6 +1316,15 @@ class GameApp:
             return
         elif kind == "home":
             self.save()
+            self.home_edit_mode = False
+            self.selected_furniture = (
+                self.state.furniture_owned[0]
+                if self.state.furniture_owned
+                else None
+            )
+            if self.selected_furniture is not None:
+                layout = self.state.furniture_layout.get(self.selected_furniture)
+                self.home_rotation = int(layout[2]) % 2 if layout else 0
             self.overlay = "home"
             return
         elif kind == "fishing":
@@ -1354,6 +1413,113 @@ class GameApp:
 
     def buy_furniture(self, key: str) -> None:
         ok, message = self.state.buy_furniture(key)
+        self.notify(message, not ok)
+        if ok:
+            self.selected_furniture = key
+            self.home_rotation = 0
+            self.save()
+
+    def select_furniture(self, key: str) -> bool:
+        if key not in self.state.furniture_owned:
+            self.notify("먼저 이 가구를 구입해 주세요.", True)
+            return False
+        self.selected_furniture = key
+        layout = self.state.furniture_layout.get(key)
+        self.home_rotation = int(layout[2]) % 2 if layout else 0
+        return True
+
+    def toggle_home_edit(self) -> None:
+        if self.home_edit_mode:
+            self.home_edit_mode = False
+            self.notify("가구 배치를 저장했어요.")
+            self.save()
+            return
+        if not self.state.furniture_owned:
+            self.notify("배치할 가구를 먼저 구입해 주세요.", True)
+            return
+        self.home_edit_mode = True
+        selected = self.selected_furniture
+        if selected not in self.state.furniture_owned:
+            selected = self.state.furniture_owned[0]
+        self.select_furniture(selected)
+        self.notify("가구를 고른 뒤 바닥을 클릭해 놓아 보세요.")
+
+    @staticmethod
+    def furniture_grid_rect(
+        key: str,
+        column: int,
+        row: int,
+        rotation: int,
+    ) -> pygame.Rect:
+        width, height = GameState.furniture_footprint(key, rotation)
+        return pygame.Rect(
+            HOME_BUILD_AREA.x + column * HOME_GRID_CELL,
+            HOME_BUILD_AREA.y + row * HOME_GRID_CELL,
+            width * HOME_GRID_CELL,
+            height * HOME_GRID_CELL,
+        )
+
+    def place_selected_furniture(self, column: int, row: int) -> None:
+        if self.selected_furniture is None:
+            self.notify("먼저 아래 보관함에서 가구를 선택해 주세요.", True)
+            return
+        ok, message = self.state.place_furniture(
+            self.selected_furniture,
+            column,
+            row,
+            self.home_rotation,
+        )
+        self.notify(message, not ok)
+        if ok:
+            self.save()
+
+    def move_selected_furniture(self, column_delta: int, row_delta: int) -> None:
+        key = self.selected_furniture
+        if key is None:
+            self.notify("움직일 가구를 선택해 주세요.", True)
+            return
+        layout = self.state.furniture_layout.get(key)
+        if layout is None:
+            self.notify("보관 중인 가구는 바닥을 클릭해 먼저 놓아 주세요.", True)
+            return
+        ok, message = self.state.place_furniture(
+            key,
+            layout[0] + column_delta,
+            layout[1] + row_delta,
+            layout[2],
+        )
+        self.notify(message, not ok)
+        if ok:
+            self.save()
+
+    def rotate_selected_furniture(self) -> None:
+        key = self.selected_furniture
+        if key is None:
+            self.notify("회전할 가구를 선택해 주세요.", True)
+            return
+        next_rotation = (self.home_rotation + 1) % 2
+        layout = self.state.furniture_layout.get(key)
+        if layout is None:
+            self.home_rotation = next_rotation
+            self.notify("놓기 전 방향을 바꿨어요.")
+            return
+        ok, message = self.state.place_furniture(
+            key,
+            layout[0],
+            layout[1],
+            next_rotation,
+        )
+        self.notify(message, not ok)
+        if ok:
+            self.home_rotation = next_rotation
+            self.save()
+
+    def store_selected_furniture(self) -> None:
+        key = self.selected_furniture
+        if key is None:
+            self.notify("보관할 가구를 선택해 주세요.", True)
+            return
+        ok, message = self.state.store_furniture(key)
         self.notify(message, not ok)
         if ok:
             self.save()
@@ -1521,6 +1687,11 @@ class GameApp:
         if event.key == pygame.K_ESCAPE:
             if self.overlay == "blending":
                 return
+            if self.overlay == "home" and self.home_edit_mode:
+                self.home_edit_mode = False
+                self.save()
+                self.notify("가구 배치를 저장했어요.")
+                return
             if self.overlay:
                 if self.overlay == "help":
                     self.close_help()
@@ -1610,8 +1781,35 @@ class GameApp:
                 pygame.K_4: "lantern",
                 pygame.K_5: "flowerpot",
             }
-            if event.key in shortcuts:
-                self.buy_furniture(shortcuts[event.key])
+            if (
+                event.key == pygame.K_g
+                or getattr(event, "scancode", None) == pygame.KSCAN_G
+            ):
+                self.toggle_home_edit()
+            elif self.home_edit_mode:
+                if event.key in shortcuts:
+                    self.select_furniture(shortcuts[event.key])
+                elif event.key == pygame.K_r:
+                    self.rotate_selected_furniture()
+                elif event.key == pygame.K_x:
+                    self.store_selected_furniture()
+                elif event.key == pygame.K_LEFT:
+                    self.move_selected_furniture(-1, 0)
+                elif event.key == pygame.K_RIGHT:
+                    self.move_selected_furniture(1, 0)
+                elif event.key == pygame.K_UP:
+                    self.move_selected_furniture(0, -1)
+                elif event.key == pygame.K_DOWN:
+                    self.move_selected_furniture(0, 1)
+                elif self.is_interaction_key(event):
+                    self.toggle_home_edit()
+            elif event.key in shortcuts:
+                key = shortcuts[event.key]
+                if key in self.state.furniture_owned:
+                    self.select_furniture(key)
+                    self.notify("G를 누르면 선택한 가구를 옮길 수 있어요.")
+                else:
+                    self.buy_furniture(key)
             elif self.is_interaction_key(event):
                 self.overlay = None
             return
@@ -1724,12 +1922,38 @@ class GameApp:
                 self.overlay = "shop"
             return
         if self.overlay == "home":
+            if HOME_EXIT_BUTTON.collidepoint(position):
+                self.home_edit_mode = False
+                self.save()
+                self.overlay = None
+                return
+            if HOME_EDIT_BUTTON.collidepoint(position):
+                self.toggle_home_edit()
+                return
+            if self.home_edit_mode:
+                if HOME_ROTATE_BUTTON.collidepoint(position):
+                    self.rotate_selected_furniture()
+                    return
+                if HOME_STORE_BUTTON.collidepoint(position):
+                    self.store_selected_furniture()
+                    return
+                if HOME_DONE_BUTTON.collidepoint(position):
+                    self.toggle_home_edit()
+                    return
+                if HOME_BUILD_AREA.collidepoint(position):
+                    column = (position[0] - HOME_BUILD_AREA.x) // HOME_GRID_CELL
+                    row = (position[1] - HOME_BUILD_AREA.y) // HOME_GRID_CELL
+                    self.place_selected_furniture(column, row)
+                    return
             for index, key in enumerate(FURNITURE_KEYS):
                 if furniture_card_rect(index).collidepoint(position):
-                    self.buy_furniture(key)
+                    if key in self.state.furniture_owned:
+                        self.select_furniture(key)
+                        self.home_edit_mode = True
+                        self.notify("바닥을 클릭하거나 방향키로 위치를 바꿔 보세요.")
+                    else:
+                        self.buy_furniture(key)
                     return
-            if pygame.Rect(1040, 90, 150, 44).collidepoint(position):
-                self.overlay = None
             return
         if self.overlay == "market":
             products = ("blueberries", "golden_blueberries", "organic_blueberries")
@@ -2941,8 +3165,35 @@ class GameApp:
         self.text("상점으로 돌아가기  E", 18, WHITE,
                   back.centerx, back.centery, center=True)
 
-    def draw_furniture(self, key: str, center: tuple[int, int], scale: float = 1.0) -> None:
+    def draw_furniture(
+        self,
+        key: str,
+        center: tuple[int, int],
+        scale: float = 1.0,
+        *,
+        rotation: int = 0,
+        fit_rect: pygame.Rect | None = None,
+    ) -> None:
         """Draw the first original pixel-art design for each farmhouse item."""
+        sprite = self.furniture_sprites.get(key)
+        if sprite is not None:
+            if rotation % 2:
+                sprite = pygame.transform.rotate(sprite, -90)
+            if fit_rect is None:
+                width = max(1, round(sprite.get_width() * scale))
+                height = max(1, round(sprite.get_height() * scale))
+            else:
+                available_width = max(1, fit_rect.width - 8)
+                available_height = max(1, fit_rect.height - 8)
+                fit_scale = min(
+                    available_width / sprite.get_width(),
+                    available_height / sprite.get_height(),
+                )
+                width = max(1, round(sprite.get_width() * fit_scale))
+                height = max(1, round(sprite.get_height() * fit_scale))
+            rendered = pygame.transform.scale(sprite, (width, height))
+            self.screen.blit(rendered, rendered.get_rect(center=center))
+            return
         x, y = center
         if key == "bed":
             w, h = round(200 * scale), round(84 * scale)
@@ -3009,52 +3260,181 @@ class GameApp:
         shade = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
         shade.fill((31, 26, 39, 178))
         self.screen.blit(shade, (0, 0))
-        room = pygame.Rect(55, 40, 1170, 640)
+        room = pygame.Rect(45, 30, 1190, 660)
         pygame.draw.rect(self.screen, (31, 27, 32), room.move(10, 10))
         pygame.draw.rect(self.screen, WOOD_DARK, room.inflate(12, 12))
-        pygame.draw.rect(self.screen, (244, 222, 176), room)
-        pygame.draw.rect(self.screen, (190, 139, 85), (room.x, 365, room.width, 315))
-        for floor_y in range(385, 680, 28):
-            pygame.draw.line(self.screen, (157, 105, 68),
-                             (room.x, floor_y), (room.right, floor_y), 2)
-        window = pygame.Rect(548, 115, 184, 118)
-        pygame.draw.rect(self.screen, WOOD_DARK, window.inflate(10, 10))
-        pygame.draw.rect(self.screen, WATER_LIGHT, window)
-        pygame.draw.line(self.screen, CREAM, window.midtop, window.midbottom, 8)
-        pygame.draw.line(self.screen, CREAM, window.midleft, window.midright, 8)
-        rug = pygame.Rect(430, 330, 420, 145)
-        rounded_rect(self.screen, rug, (135, 87, 161), 28, BLUEBERRY_DARK, 7)
-        self.text("나의 농장집 · 가구 상점", 28, BLUEBERRY_DARK,
-                  room.centerx, 76, center=True)
-        self.text(f"가구를 사면 즉시 방에 놓여요 · 보유 {self.state.money:,}코인",
-                  14, MUTED, room.centerx, 105, center=True)
-        exit_button = pygame.Rect(1040, 90, 150, 44)
-        rounded_rect(self.screen, exit_button, BLUEBERRY, 9, WOOD_DARK, 3)
+        pygame.draw.rect(self.screen, (246, 228, 187), room)
+        self.text("나의 농장집", 28, BLUEBERRY_DARK, 78, 49)
+        subtitle = (
+            "보관함에서 가구 선택 → 바닥 클릭 · 초록색이면 배치 가능"
+            if self.home_edit_mode
+            else f"가구를 구입한 뒤 G로 꾸미기 · 보유 {self.state.money:,}코인"
+        )
+        self.text(subtitle, 14, MUTED, 80, 91)
+        rounded_rect(
+            self.screen,
+            HOME_EDIT_BUTTON,
+            GREEN if self.home_edit_mode else (136, 102, 166),
+            9,
+            WOOD_DARK,
+            3,
+        )
+        self.text(
+            "배치 완료 G" if self.home_edit_mode else "꾸미기 모드 G",
+            15,
+            WHITE,
+            HOME_EDIT_BUTTON.centerx,
+            HOME_EDIT_BUTTON.centery,
+            center=True,
+        )
+        rounded_rect(self.screen, HOME_EXIT_BUTTON, BLUEBERRY, 9, WOOD_DARK, 3)
         self.text("집 나가기 E", 15, WHITE,
-                  exit_button.centerx, exit_button.centery, center=True)
+                  HOME_EXIT_BUTTON.centerx, HOME_EXIT_BUTTON.centery, center=True)
 
-        placements = {
-            "bed": (225, 300),
-            "drawer": (995, 285),
-            "desk": (670, 310),
-            "lantern": (890, 315),
-            "flowerpot": (385, 318),
-        }
-        for key in self.state.furniture_owned:
-            if key in placements:
-                self.draw_furniture(key, placements[key], 0.75)
+        # The house is a top-down, snapped building canvas.  Its proportions
+        # deliberately match the state grid so a saved cell always maps to the
+        # same visible point on every frame.
+        pygame.draw.rect(self.screen, WOOD_DARK, HOME_BUILD_AREA.inflate(8, 8))
+        pygame.draw.rect(self.screen, (203, 151, 91), HOME_BUILD_AREA)
+        for row in range(FURNITURE_GRID_ROWS):
+            strip = pygame.Rect(
+                HOME_BUILD_AREA.x,
+                HOME_BUILD_AREA.y + row * HOME_GRID_CELL,
+                HOME_BUILD_AREA.width,
+                HOME_GRID_CELL,
+            )
+            pygame.draw.rect(
+                self.screen,
+                (211, 164, 101) if row % 2 == 0 else (196, 143, 86),
+                strip,
+            )
+            pygame.draw.line(
+                self.screen,
+                (159, 105, 67),
+                strip.bottomleft,
+                strip.bottomright,
+                2,
+            )
+        if self.home_edit_mode:
+            for column in range(FURNITURE_GRID_COLUMNS + 1):
+                x = HOME_BUILD_AREA.x + column * HOME_GRID_CELL
+                pygame.draw.line(
+                    self.screen,
+                    (232, 199, 143),
+                    (x, HOME_BUILD_AREA.top),
+                    (x, HOME_BUILD_AREA.bottom),
+                    1,
+                )
+            for row in range(FURNITURE_GRID_ROWS + 1):
+                y = HOME_BUILD_AREA.y + row * HOME_GRID_CELL
+                pygame.draw.line(
+                    self.screen,
+                    (232, 199, 143),
+                    (HOME_BUILD_AREA.left, y),
+                    (HOME_BUILD_AREA.right, y),
+                    1,
+                )
+
+        for key in FURNITURE_KEYS:
+            layout = self.state.furniture_layout.get(key)
+            if layout is None:
+                continue
+            furniture_rect = self.furniture_grid_rect(key, *layout)
+            if self.home_edit_mode and key == self.selected_furniture:
+                pygame.draw.rect(self.screen, CREAM, furniture_rect.inflate(5, 5), 3)
+            self.draw_furniture(
+                key,
+                furniture_rect.center,
+                rotation=layout[2],
+                fit_rect=furniture_rect,
+            )
+
+        if self.home_edit_mode and self.selected_furniture is not None:
+            mouse_x, mouse_y = pygame.mouse.get_pos()
+            if HOME_BUILD_AREA.collidepoint((mouse_x, mouse_y)):
+                column = (mouse_x - HOME_BUILD_AREA.x) // HOME_GRID_CELL
+                row = (mouse_y - HOME_BUILD_AREA.y) // HOME_GRID_CELL
+                preview_rect = self.furniture_grid_rect(
+                    self.selected_furniture,
+                    column,
+                    row,
+                    self.home_rotation,
+                )
+                valid = self.state.can_place_furniture(
+                    self.selected_furniture,
+                    column,
+                    row,
+                    self.home_rotation,
+                )
+                preview = pygame.Surface(preview_rect.size, pygame.SRCALPHA)
+                preview.fill((86, 194, 100, 82) if valid else (211, 83, 77, 94))
+                self.screen.blit(preview, preview_rect)
+                pygame.draw.rect(
+                    self.screen,
+                    GREEN_DARK if valid else RED,
+                    preview_rect,
+                    4,
+                )
+                self.draw_furniture(
+                    self.selected_furniture,
+                    preview_rect.center,
+                    rotation=self.home_rotation,
+                    fit_rect=preview_rect,
+                )
+
+        selected_label = (
+            FURNITURE_LABELS[self.selected_furniture]
+            if self.selected_furniture is not None
+            else "없음"
+        )
+        if self.home_edit_mode:
+            self.text(
+                f"선택: {selected_label} · 방향키 이동 · R 회전 · X 보관",
+                14,
+                BLUEBERRY_DARK,
+                82,
+                503,
+            )
+            for rect, label in (
+                (HOME_ROTATE_BUTTON, "회전 R"),
+                (HOME_STORE_BUTTON, "보관 X"),
+                (HOME_DONE_BUTTON, "완료 Enter"),
+            ):
+                rounded_rect(self.screen, rect, (136, 102, 166), 8, WOOD_DARK, 3)
+                self.text(label, 14, WHITE, rect.centerx, rect.centery, center=True)
+        else:
+            self.text(
+                "한 종류당 하나씩 구입할 수 있고, 배치한 위치와 방향은 자동 저장됩니다.",
+                14,
+                MUTED,
+                82,
+                503,
+            )
 
         for index, key in enumerate(FURNITURE_KEYS):
             rect = furniture_card_rect(index)
             owned = key in self.state.furniture_owned
-            fill = (224, 238, 196) if owned else (255, 240, 198)
-            rounded_rect(self.screen, rect, fill, 11, WOOD_DARK, 3)
-            self.draw_furniture(key, (rect.centerx, rect.y + 45), 0.3)
+            placed = key in self.state.furniture_layout
+            selected = key == self.selected_furniture
+            fill = (222, 237, 196) if owned else (255, 240, 198)
+            rounded_rect(
+                self.screen,
+                rect,
+                fill,
+                11,
+                BLUEBERRY_DARK if selected else WOOD_DARK,
+                5 if selected else 3,
+            )
+            self.draw_furniture(key, (rect.centerx, rect.y + 39), 0.42)
             self.text(f"[{index + 1}] {FURNITURE_LABELS[key]}", 15, INK,
-                      rect.centerx, rect.y + 79, center=True)
-            status = "배치 완료" if owned else f"{FURNITURE_COSTS[key]:,}코인"
+                      rect.centerx, rect.y + 75, center=True)
+            status = (
+                "배치됨" if placed
+                else "보관 중" if owned
+                else f"{FURNITURE_COSTS[key]:,}코인"
+            )
             self.text(status, 13, GREEN_DARK if owned else BLUEBERRY_DARK,
-                      rect.centerx, rect.y + 100, center=True)
+                      rect.centerx, rect.y + 97, center=True)
 
     def draw_blender_overlay(self) -> None:
         shade = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)

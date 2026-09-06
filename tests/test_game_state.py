@@ -21,6 +21,7 @@ from game_state import (  # noqa: E402
     FISHING_ROD_MAX_DURABILITY,
     FISH_PRICES,
     FURNITURE_COSTS,
+    FURNITURE_GRID_COLUMNS,
     GAME_DAY_SECONDS,
     GOLDEN_BLUEBERRY_PRICE,
     GROW_SECONDS,
@@ -162,6 +163,47 @@ class GameStateTests(unittest.TestCase):
         self.assertEqual(loaded.crucian_carp, 1)
         self.assertEqual(loaded.bass, 1)
         self.assertEqual(loaded.furniture_owned, list(FURNITURE_COSTS))
+
+    def test_furniture_is_bought_into_storage_then_placed_rotated_and_stored(self):
+        state = GameState.new(now=100.0)
+        state.money = FURNITURE_COSTS["bed"] + FURNITURE_COSTS["drawer"]
+        self.assertTrue(state.buy_furniture("bed")[0])
+        self.assertTrue(state.buy_furniture("drawer")[0])
+        self.assertEqual(state.furniture_layout, {})
+
+        self.assertTrue(state.place_furniture("bed", 1, 1)[0])
+        ok, message = state.place_furniture("drawer", 4, 2)
+        self.assertFalse(ok)
+        self.assertIn("겹치", message)
+        self.assertTrue(state.place_furniture("drawer", 10, 2)[0])
+        self.assertTrue(state.place_furniture("bed", 1, 1, 1)[0])
+        self.assertEqual(state.furniture_layout["bed"], [1, 1, 1])
+
+        ok, _ = state.place_furniture("bed", FURNITURE_GRID_COLUMNS - 1, 1, 0)
+        self.assertFalse(ok)
+        self.assertTrue(state.store_furniture("drawer")[0])
+        self.assertNotIn("drawer", state.furniture_layout)
+
+    def test_furniture_layout_round_trip_and_version_four_migration(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "save.json"
+            state = GameState.new(now=100.0)
+            state.money = sum(FURNITURE_COSTS.values())
+            for key in FURNITURE_COSTS:
+                self.assertTrue(state.buy_furniture(key)[0])
+            self.assertTrue(state.place_furniture("bed", 2, 2, 1)[0])
+            state.save(path)
+            loaded = GameState.load(path)
+            self.assertEqual(loaded.furniture_layout, {"bed": [2, 2, 1]})
+
+            legacy = state.to_dict()
+            legacy["save_version"] = 4
+            legacy.pop("furniture_layout")
+            path.write_text(json.dumps(legacy), encoding="utf-8")
+            migrated = GameState.load(path)
+
+        self.assertEqual(migrated.furniture_owned, list(FURNITURE_COSTS))
+        self.assertEqual(set(migrated.furniture_layout), set(FURNITURE_COSTS))
 
     def test_fishing_rod_breaks_exactly_on_the_fortieth_cast(self):
         state = GameState.new(now=100.0)

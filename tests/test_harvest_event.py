@@ -542,7 +542,7 @@ class HarvestEventTests(unittest.TestCase):
         self.assertEqual(self.app.fishing_phase, "idle")
         self.assertEqual(self.app.state.carp, 1)
 
-    def test_farmhouse_furniture_shop_places_one_design_of_each_item(self):
+    def test_farmhouse_furniture_shop_enters_edit_mode_and_places_items(self):
         self.app.state.money = sum(main.FURNITURE_COSTS.values())
         self.app.player.update(main.HOUSE.centerx, main.HOUSE.bottom + 37)
         self.app.interact()
@@ -555,7 +555,52 @@ class HarvestEventTests(unittest.TestCase):
                 mod=0,
             ))
         self.assertEqual(self.app.state.furniture_owned, list(main.FURNITURE_COSTS))
+        self.assertEqual(self.app.state.furniture_layout, {})
+
+        self.app.handle_key(pygame.event.Event(
+            pygame.KEYDOWN,
+            key=pygame.K_g,
+            scancode=pygame.KSCAN_G,
+            mod=0,
+        ))
+        self.assertTrue(self.app.home_edit_mode)
+        self.app.handle_key(pygame.event.Event(
+            pygame.KEYDOWN,
+            key=pygame.K_1,
+            scancode=0,
+            mod=0,
+        ))
+        position = (
+            main.HOME_BUILD_AREA.x + main.HOME_GRID_CELL + 4,
+            main.HOME_BUILD_AREA.y + main.HOME_GRID_CELL + 4,
+        )
+        self.app.handle_click(position)
+        self.assertEqual(self.app.state.furniture_layout["bed"], [1, 1, 0])
+
+        self.app.handle_key(pygame.event.Event(
+            pygame.KEYDOWN,
+            key=pygame.K_r,
+            scancode=0,
+            mod=0,
+        ))
+        self.assertEqual(self.app.state.furniture_layout["bed"], [1, 1, 1])
+        self.app.handle_key(pygame.event.Event(
+            pygame.KEYDOWN,
+            key=pygame.K_RIGHT,
+            scancode=0,
+            mod=0,
+        ))
+        self.assertEqual(self.app.state.furniture_layout["bed"], [2, 1, 1])
         self.app.draw()
+
+    def test_fish_and_furniture_png_catalogues_are_loaded(self):
+        self.assertEqual(set(self.app.fish_icons), set(main.FISH_KEYS))
+        self.assertEqual(set(self.app.furniture_sprites), set(main.FURNITURE_KEYS))
+        self.assertFalse(self.app.decor_asset_error)
+        for path in (*main.FISH_ASSET_PATHS.values(), *main.FURNITURE_ASSET_PATHS.values()):
+            self.assertTrue(path.exists(), path)
+        self.app.draw_item_icon("carp", (100, 100))
+        self.app.draw_furniture("bed", (200, 200), 0.5)
 
     def test_tree_spacing_and_side_back_foot_motion_are_clear(self):
         closest_pair = min(

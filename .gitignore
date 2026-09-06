@@ -4,3 +4,5 @@ __pycache__/
 save_game.json
 save_game.json.tmp
 
+# Local-only sale sound supplied by the game owner.
+assets/smoothie_sale.wav

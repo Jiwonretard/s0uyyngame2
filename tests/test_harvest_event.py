@@ -705,6 +705,21 @@ class HarvestEventTests(unittest.TestCase):
         self.app.draw_item_icon("carp", (100, 100))
         self.app.draw_furniture("bed", (200, 200), 0.5)
 
+    def test_redesigned_facility_png_catalogue_is_loaded_and_drawn(self):
+        self.assertEqual(set(self.app.facility_sprites), set(main.FACILITY_RECTS))
+        for key, path in main.FACILITY_ASSET_PATHS.items():
+            self.assertTrue(path.exists(), path)
+            self.assertEqual(
+                self.app.facility_sprites[key].get_size(),
+                main.FACILITY_RECTS[key].size,
+            )
+            self.assertGreater(
+                self.app.facility_sprites[key].get_bounding_rect(min_alpha=1).width,
+                main.FACILITY_RECTS[key].width // 2,
+            )
+            self.app.state.facility_levels[key] = 3
+            self.app.draw_facility(key, main.FACILITY_RECTS[key])
+
     def test_tree_spacing_and_side_back_foot_motion_are_clear(self):
         closest_pair = min(
             math.dist(first, second)

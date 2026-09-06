@@ -86,6 +86,10 @@ FURNITURE_ASSET_PATHS = {
     key: BASE_DIR / "assets" / "furniture" / f"{key}.png"
     for key in FURNITURE_COSTS
 }
+FACILITY_ASSET_PATHS = {
+    key: BASE_DIR / "assets" / "facilities" / f"{key}.png"
+    for key in FACILITY_KEYS
+}
 BGM_NORMAL_VOLUME = 0.28
 BGM_DUCK_VOLUME = 0.055
 BGM_VOLUME_CHANGE_SPEED = 2.8
@@ -537,6 +541,7 @@ class GameApp:
         self.fish_icons: dict[str, pygame.Surface] = {}
         self.fish_icons_small: dict[str, pygame.Surface] = {}
         self.furniture_sprites: dict[str, pygame.Surface] = {}
+        self.facility_sprites: dict[str, pygame.Surface] = {}
         self.decor_asset_error = ""
         self.home_edit_mode = False
         self.selected_furniture: str | None = None
@@ -723,6 +728,23 @@ class GameApp:
                 sprite = pygame.image.load(str(path)).convert_alpha()
                 bounds = sprite.get_bounding_rect(min_alpha=1)
                 self.furniture_sprites[key] = sprite.subsurface(bounds).copy()
+            except (pygame.error, FileNotFoundError, ValueError) as exc:
+                errors.append(f"{path.name}: {exc}")
+        for key, path in FACILITY_ASSET_PATHS.items():
+            try:
+                sprite = pygame.image.load(str(path)).convert_alpha()
+                bounds = sprite.get_bounding_rect(min_alpha=1)
+                sprite = sprite.subsurface(bounds).copy()
+                target = FACILITY_RECTS[key]
+                scale = min(target.width / sprite.get_width(), target.height / sprite.get_height())
+                scaled = pygame.transform.scale(
+                    sprite,
+                    (max(1, round(sprite.get_width() * scale)),
+                     max(1, round(sprite.get_height() * scale))),
+                )
+                canvas = pygame.Surface(target.size, pygame.SRCALPHA)
+                canvas.blit(scaled, scaled.get_rect(midbottom=(target.width // 2, target.height)))
+                self.facility_sprites[key] = canvas
             except (pygame.error, FileNotFoundError, ValueError) as exc:
                 errors.append(f"{path.name}: {exc}")
         self.decor_asset_error = "; ".join(errors)
@@ -2554,12 +2576,11 @@ class GameApp:
             return
         config = FACILITY_CONFIG[key]
         level = self.state.facility_level(key)
-        pygame.draw.rect(self.screen, (74, 105, 55), rect.move(7, 8), border_radius=8)
-        pygame.draw.rect(self.screen, WOOD_DARK, rect.inflate(8, 8), border_radius=9)
-        pygame.draw.rect(self.screen, (213, 172, 104), rect, border_radius=7)
-        pygame.draw.rect(self.screen, (236, 201, 137), rect.inflate(-8, -8), border_radius=5)
-
         if level <= 0:
+            pygame.draw.rect(self.screen, (74, 105, 55), rect.move(7, 8), border_radius=8)
+            pygame.draw.rect(self.screen, WOOD_DARK, rect.inflate(8, 8), border_radius=9)
+            pygame.draw.rect(self.screen, (213, 172, 104), rect, border_radius=7)
+            pygame.draw.rect(self.screen, (236, 201, 137), rect.inflate(-8, -8), border_radius=5)
             pygame.draw.rect(self.screen, (151, 105, 66), rect.inflate(-22, -24), 3)
             for offset in range(12, rect.width - 12, 20):
                 pygame.draw.line(
@@ -2580,43 +2601,42 @@ class GameApp:
                 rect.centery + 18,
                 center=True,
             )
-        elif key == "beehive":
-            hive = pygame.Rect(rect.centerx - 33, rect.y + 23, 66, 55)
-            pygame.draw.rect(self.screen, (113, 70, 39), hive.inflate(6, 6), border_radius=15)
-            for index, width in enumerate((42, 57, 66, 57)):
-                band = pygame.Rect(rect.centerx - width // 2, hive.y + index * 12, width, 15)
-                pygame.draw.rect(self.screen, (235, 177, 49), band, border_radius=7)
-            pygame.draw.circle(self.screen, (72, 50, 34), (rect.centerx, hive.bottom - 7), 7)
+        else:
+            pygame.draw.ellipse(
+                self.screen,
+                (59, 104, 49),
+                (rect.x + 7, rect.bottom - 16, rect.width - 14, 20),
+            )
+            sprite = self.facility_sprites.get(key)
+            if sprite is not None:
+                self.screen.blit(sprite, rect.topleft)
+            else:
+                fallback_color = {
+                    "beehive": (230, 170, 57),
+                    "ice_maker": (99, 184, 203),
+                    "cow_barn": (169, 65, 62),
+                }[key]
+                rounded_rect(self.screen, rect.inflate(-16, -12), fallback_color, 8, WOOD_DARK, 5)
+
+        if level > 0 and key == "beehive":
             for bee_index in range(level + 1):
                 angle = time.time() * 2.2 + bee_index * 2.4
                 bx = rect.centerx + round(math.cos(angle) * (38 + bee_index * 5))
                 by = rect.centery - 13 + round(math.sin(angle) * 18)
                 pygame.draw.circle(self.screen, INK, (bx, by), 4)
                 pygame.draw.rect(self.screen, GOLD, (bx - 3, by - 2, 6, 4))
-        elif key == "ice_maker":
-            machine = pygame.Rect(rect.x + 25, rect.y + 17, rect.width - 50, rect.height - 34)
-            pygame.draw.rect(self.screen, (49, 98, 121), machine.inflate(6, 6), border_radius=7)
-            pygame.draw.rect(self.screen, (99, 184, 203), machine, border_radius=5)
-            window = pygame.Rect(machine.x + 13, machine.y + 11, machine.width - 26, 31)
-            pygame.draw.rect(self.screen, (229, 248, 245), window)
-            for index in range(level + 1):
-                cube_x = window.x + 8 + (index % 3) * 23
-                pygame.draw.rect(self.screen, WATER_LIGHT, (cube_x, window.y + 7, 15, 15), 3)
-            pygame.draw.circle(self.screen, GOLD, (machine.centerx, machine.bottom - 12), 5)
-        else:
-            wall = pygame.Rect(rect.x + 16, rect.y + 48, rect.width - 32, rect.height - 61)
-            pygame.draw.rect(self.screen, (165, 76, 61), wall)
-            roof = [(rect.x + 5, rect.y + 53), (rect.centerx, rect.y + 10), (rect.right - 5, rect.y + 53)]
-            pygame.draw.polygon(self.screen, (112, 55, 49), roof)
-            pygame.draw.polygon(self.screen, (205, 101, 75), roof, 5)
-            door = pygame.Rect(rect.centerx - 35, wall.y + 23, 70, wall.height - 23)
-            pygame.draw.rect(self.screen, CREAM, door)
-            pygame.draw.circle(self.screen, WHITE, (door.centerx, door.y + 22), 21)
-            pygame.draw.ellipse(self.screen, (237, 180, 190), (door.centerx - 14, door.y + 20, 28, 18))
-            pygame.draw.circle(self.screen, INK, (door.centerx - 8, door.y + 18), 3)
-            pygame.draw.circle(self.screen, INK, (door.centerx + 8, door.y + 18), 3)
+        elif level > 0 and key == "ice_maker":
             for index in range(level):
-                pygame.draw.rect(self.screen, GOLD, (rect.x + 24 + index * 24, rect.bottom - 24, 15, 15))
+                cube = pygame.Rect(rect.right - 27 - index * 18, rect.bottom - 18, 18, 18)
+                pygame.draw.rect(self.screen, (52, 98, 121), cube.inflate(4, 4))
+                pygame.draw.rect(self.screen, WATER_LIGHT, cube)
+                pygame.draw.rect(self.screen, (225, 248, 244), cube.inflate(-7, -7))
+        elif level > 0 and key == "cow_barn":
+            for index in range(level):
+                bale = pygame.Rect(rect.x + 18 + index * 31, rect.bottom - 24, 27, 19)
+                pygame.draw.rect(self.screen, WOOD_DARK, bale.inflate(4, 4))
+                pygame.draw.rect(self.screen, GOLD, bale)
+                pygame.draw.line(self.screen, CREAM, bale.midtop, bale.midbottom, 2)
 
         label_y = rect.bottom + 19
         label_width = max(112, self.fonts[14].size(str(config["name"]))[0] + 58)

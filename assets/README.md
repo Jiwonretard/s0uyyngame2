@@ -28,6 +28,13 @@
 - `furniture/flowerpot.png`: 화분
 - `furniture/furniture_sheet.png`: 위 다섯 디자인을 순서대로 모은 확인용 시트
 
-모든 물고기와 가구는 투명 배경 PNG이며 게임 안에서 실제로 불러와 사용합니다.
+## 생산 시설 픽셀 디자인
+
+- `facilities/beehive.png`: 층이 나뉜 목제 벌통과 받침대
+- `facilities/ice_maker.png`: 얼음 확인창·배출구·받침 트레이가 있는 제빙기
+- `facilities/cow_barn.png`: 젖소 얼굴·창문·건초가 보이는 작은 축사
+- `facilities/facility_sheet.png`: 위 세 디자인을 순서대로 모은 확인용 시트
+
+모든 물고기·가구·생산 시설은 투명 배경 PNG이며 게임 안에서 실제로 불러와 사용합니다.
 `generate_pixel_assets.py`를 실행하면 같은 원본 픽셀 디자인으로 개별 파일과 시트를
 다시 만들 수 있습니다. 외부 게임의 그래픽은 포함하지 않았습니다.

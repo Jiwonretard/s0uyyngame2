@@ -263,9 +263,79 @@ class HarvestEventTests(unittest.TestCase):
         self.assertEqual(self.app.state.game_elapsed_seconds, 12.0)
 
         self.app.state.game_elapsed_seconds = main.DAY_SECONDS / 2
-        self.assertEqual(self.app.game_clock()[:3], (1, 14, 0))
+        self.assertEqual(self.app.game_clock()[:3], (1, 18, 0))
+        self.app.state.game_elapsed_seconds = main.DAY_SECONDS * 0.75
+        self.assertEqual(self.app.game_clock()[:3], (1, 0, 0))
         self.app.state.game_elapsed_seconds = main.DAY_SECONDS
         self.assertEqual(self.app.game_clock()[:3], (2, 6, 0))
+
+    def test_day_evening_and_night_are_visually_separate(self):
+        self.assertEqual(main.day_period_for_phase(0.00), "아침")
+        self.assertEqual(main.day_period_for_phase(2 / 24), "낮")
+        self.assertEqual(main.day_period_for_phase(12 / 24), "저녁")
+        self.assertEqual(main.day_period_for_phase(14 / 24), "밤")
+        self.assertEqual(main.day_period_for_phase(22 / 24), "새벽")
+
+        self.app.screen.fill((160, 160, 160))
+        self.app.state.game_elapsed_seconds = main.DAY_SECONDS * 0.25
+        self.app.draw_lighting()
+        day_pixel = self.app.screen.get_at((20, 20))[:3]
+
+        self.app.screen.fill((160, 160, 160))
+        self.app.state.game_elapsed_seconds = main.DAY_SECONDS * 0.75
+        self.app.draw_lighting()
+        night_pixel = self.app.screen.get_at((20, 20))[:3]
+        self.assertLess(sum(night_pixel), sum(day_pixel))
+
+    def test_pixel_sun_and_moon_cross_matching_sky_arcs(self):
+        sun = main.celestial_position_for_phase(0.25)
+        moon = main.celestial_position_for_phase(0.75)
+        self.assertEqual(sun[0], "sun")
+        self.assertEqual(moon[0], "moon")
+        self.assertEqual(sun[1:3], moon[1:3])
+        self.assertEqual(sun[1], main.SCREEN_W // 2)
+
+        self.app.state.game_elapsed_seconds = main.DAY_SECONDS * 0.25
+        self.app.screen.fill((0, 0, 0))
+        self.app.draw_celestial_cycle()
+        self.assertGreater(sum(self.app.screen.get_at(sun[1:3])[:3]), 0)
+
+    def test_e_installs_three_thousand_coin_streetlight_with_night_glow(self):
+        self.assertEqual(len(main.STREETLIGHT_POSITIONS), main.STREETLIGHT_COUNT)
+        self.assertEqual(len(main.STREETLIGHT_SITE_LABELS), main.STREETLIGHT_COUNT)
+        self.assertEqual(
+            main.STREETLIGHT_SITE_LABELS,
+            ("농장집", "블루베리 밭", "벌통·시설", "상점", "생과 시장", "스무디 판매대"),
+        )
+        lamp_index = 0
+        lamp_point = main.STREETLIGHT_POSITIONS[lamp_index]
+        self.app.state.money = main.STREETLIGHT_COST
+        self.app.player.update(*lamp_point)
+        target = self.app.nearest_interaction()
+        self.assertIsNotNone(target)
+        self.assertEqual(target["kind"], "streetlight")
+        self.assertIn("농장집", target["prompt"])
+        self.assertIn("3,000", target["prompt"])
+
+        event = pygame.event.Event(
+            pygame.KEYDOWN,
+            key=pygame.K_e,
+            scancode=pygame.KSCAN_E,
+            mod=0,
+        )
+        self.app.handle_key(event)
+
+        self.assertTrue(self.app.state.streetlights_installed[lamp_index])
+        self.assertEqual(self.app.state.money, 0)
+
+        self.app.state.game_elapsed_seconds = main.DAY_SECONDS * 0.75
+        self.app._snap_camera()
+        self.app.screen.fill((150, 150, 150))
+        self.app.draw_lighting()
+        lamp_screen = self.app.world_to_screen((lamp_point[0] + 25, lamp_point[1] - 82))
+        lit_pixel = self.app.screen.get_at(lamp_screen)[:3]
+        dark_pixel = self.app.screen.get_at((10, 10))[:3]
+        self.assertGreater(sum(lit_pixel), sum(dark_pixel))
 
     def test_app_save_restores_exact_day_and_progress(self):
         self.assertEqual(main.DAY_SECONDS, 24 * 60)

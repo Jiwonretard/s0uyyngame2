@@ -30,6 +30,8 @@ from game_state import (  # noqa: E402
     REGROW_SECONDS,
     SMOOTHIE_PRICE_MULTIPLIER,
     SPECIAL_SMOOTHIE_BONUS,
+    STREETLIGHT_COST,
+    STREETLIGHT_COUNT,
     TREE_DROP_TABLE,
     VIP_TITLES,
     GameState,
@@ -210,6 +212,47 @@ class GameStateTests(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(state.money, 0)
         self.assertEqual(state.land_cost, second_cost + LAND_COST_STEP)
+
+    def test_streetlights_cost_three_thousand_and_persist(self):
+        state = GameState.new(now=100.0)
+        self.assertEqual(STREETLIGHT_COST, 3_000)
+        self.assertEqual(len(state.streetlights_installed), STREETLIGHT_COUNT)
+        self.assertFalse(any(state.streetlights_installed))
+        state.money = STREETLIGHT_COST
+
+        ok, message = state.buy_streetlight(1)
+
+        self.assertTrue(ok)
+        self.assertIn("설치", message)
+        self.assertEqual(state.money, 0)
+        self.assertEqual(state.daily_money_spent, STREETLIGHT_COST)
+        self.assertTrue(state.streetlights_installed[1])
+        ok, _message = state.buy_streetlight(1)
+        self.assertFalse(ok)
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "save.json"
+            state.save(path)
+            loaded = GameState.load(path, now=101.0)
+        self.assertEqual(
+            loaded.streetlights_installed,
+            [False, True, False, False, False, False],
+        )
+
+    def test_three_old_streetlights_are_preserved_when_sites_expand_to_six(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "save.json"
+            state = GameState.new(now=100.0)
+            data = state.to_dict()
+            data["streetlights_installed"] = [True, False, True]
+            path.write_text(json.dumps(data), encoding="utf-8")
+
+            loaded = GameState.load(path, now=101.0)
+
+        self.assertEqual(
+            loaded.streetlights_installed,
+            [True, False, True, False, False, False],
+        )
 
     def test_tree_drop_probabilities_and_daily_shake_limit(self):
         self.assertEqual(

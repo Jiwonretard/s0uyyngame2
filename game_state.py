@@ -52,6 +52,8 @@ WEATHER_LABELS = {
 REPUTATION_THRESHOLDS = (0, 8, 25, 55, 95)
 MAX_FACILITY_LEVEL = 3
 FACILITY_KEYS = ("beehive", "ice_maker", "cow_barn")
+STREETLIGHT_COST = 3_000
+STREETLIGHT_COUNT = 6
 FACILITY_CONFIG = {
     "beehive": {
         "name": "벌통",
@@ -417,6 +419,9 @@ class GameState:
     )
     facility_ready_days: dict[str, int] = field(
         default_factory=lambda: {key: 0 for key in FACILITY_KEYS}
+    )
+    streetlights_installed: list[bool] = field(
+        default_factory=lambda: [False] * STREETLIGHT_COUNT
     )
 
     @classmethod
@@ -1035,6 +1040,18 @@ class GameState:
         self.land_purchased += 1
         return True, f"새 텃밭을 샀어요! 이제 밭이 {self.active_plots}칸이에요."
 
+    def buy_streetlight(self, index: int) -> tuple[bool, str]:
+        if not 0 <= index < STREETLIGHT_COUNT:
+            return False, "설치할 수 없는 가로등 부지예요."
+        if self.streetlights_installed[index]:
+            return False, "이곳에는 이미 가로등이 설치되어 있어요."
+        if self.money < STREETLIGHT_COST:
+            return False, f"가로등 설치에는 {STREETLIGHT_COST:,}코인이 필요해요."
+        self.money -= STREETLIGHT_COST
+        self.daily_money_spent += STREETLIGHT_COST
+        self.streetlights_installed[index] = True
+        return True, "가로등을 설치했어요! 저녁부터 주변을 환하게 밝혀 줍니다."
+
     def to_dict(self) -> dict:
         data = asdict(self)
         data["save_version"] = SAVE_VERSION
@@ -1154,6 +1171,17 @@ class GameState:
                 key: max(0, int(raw_ready_days.get(key, 0)))
                 for key in FACILITY_KEYS
             }
+            raw_streetlights = (
+                state.streetlights_installed
+                if isinstance(state.streetlights_installed, list)
+                else []
+            )
+            state.streetlights_installed = [
+                bool(raw_streetlights[index])
+                if index < len(raw_streetlights)
+                else False
+                for index in range(STREETLIGHT_COUNT)
+            ]
             state.customers_waiting = max(
                 0, min(CUSTOMER_QUEUE_SIZE, int(state.customers_waiting))
             )

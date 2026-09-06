@@ -32,6 +32,8 @@ from game_state import (
     MAX_FACILITY_LEVEL,
     MAX_PLOTS,
     SPECIAL_SMOOTHIE_BONUS,
+    STREETLIGHT_COST,
+    STREETLIGHT_COUNT,
     WEATHER_LABELS,
     GameState,
     is_blueberry_festival,
@@ -69,6 +71,8 @@ INGREDIENT_SOURCE_PATHS = {
 BGM_NORMAL_VOLUME = 0.28
 BGM_DUCK_VOLUME = 0.055
 BGM_VOLUME_CHANGE_SPEED = 2.8
+GAME_START_MINUTES = 6 * 60
+GAME_CLOCK_MINUTES = 24 * 60
 
 INK = (48, 40, 42)
 WHITE = (255, 255, 255)
@@ -108,6 +112,25 @@ FACILITY_RECTS = {
     "ice_maker": ICE_MAKER,
     "cow_barn": COW_BARN,
 }
+
+# Lamp sites are distributed across the whole village rather than clustered by
+# the blender. Each one is purchased separately and lights its own area.
+STREETLIGHT_POSITIONS = (
+    (500, 355),
+    (970, 820),
+    (410, 1135),
+    (1640, 475),
+    (1425, 1215),
+    (2010, 1090),
+)
+STREETLIGHT_SITE_LABELS = (
+    "농장집",
+    "블루베리 밭",
+    "벌통·시설",
+    "상점",
+    "생과 시장",
+    "스무디 판매대",
+)
 
 CUSTOMER_QUEUE_POINTS = [
     (1840, 1322),
@@ -188,6 +211,63 @@ def distance_to_rect(point: tuple[float, float], rect: pygame.Rect) -> float:
     closest_x = max(rect.left, min(point[0], rect.right))
     closest_y = max(rect.top, min(point[1], rect.bottom))
     return distance(point, (closest_x, closest_y))
+
+
+def day_period_for_phase(phase: float) -> str:
+    """Map a farm day from 06:00 through the following dawn."""
+    normalized = max(0.0, min(0.999999, float(phase)))
+    if normalized < 2 / 24:
+        return "아침"
+    if normalized < 12 / 24:
+        return "낮"
+    if normalized < 14 / 24:
+        return "저녁"
+    if normalized < 22 / 24:
+        return "밤"
+    return "새벽"
+
+
+def clock_minutes_for_phase(phase: float) -> int:
+    normalized = max(0.0, min(0.999999, float(phase)))
+    return (GAME_START_MINUTES + int(normalized * GAME_CLOCK_MINUTES)) % GAME_CLOCK_MINUTES
+
+
+def lighting_color_for_phase(phase: float) -> tuple[int, int, int, int]:
+    """Smoothly interpolate dawn, daylight, sunset, midnight, and dawn again."""
+    normalized = max(0.0, min(0.999999, float(phase)))
+    keyframes = (
+        (0.0, (102, 78, 116, 45)),       # 06:00 sunrise
+        (2 / 24, (116, 91, 125, 0)),     # 08:00 clear daylight
+        (11 / 24, (245, 166, 100, 0)),   # 17:00 sunset begins
+        (12 / 24, (143, 76, 101, 30)),   # 18:00 sunset
+        (14 / 24, (52, 48, 91, 86)),     # 20:00 night
+        (18 / 24, (22, 30, 70, 134)),    # 00:00 deepest night
+        (22 / 24, (51, 52, 92, 92)),     # 04:00 dawn begins
+        (1.0, (102, 78, 116, 45)),       # 06:00 sunrise again
+    )
+    for (start, start_color), (end, end_color) in zip(keyframes, keyframes[1:]):
+        if normalized <= end:
+            span = max(0.000001, end - start)
+            amount = (normalized - start) / span
+            return tuple(
+                round(left + (right - left) * amount)
+                for left, right in zip(start_color, end_color)
+            )
+    return keyframes[-1][1]
+
+
+def celestial_position_for_phase(phase: float) -> tuple[str, int, int, float]:
+    """Move the sun and moon east-to-west along matching half-day arcs."""
+    normalized = max(0.0, min(0.999999, float(phase)))
+    if normalized < 0.5:
+        body = "sun"
+        progress = normalized / 0.5
+    else:
+        body = "moon"
+        progress = (normalized - 0.5) / 0.5
+    x = round(-55 + progress * (SCREEN_W + 110))
+    y = round(260 - math.sin(progress * math.pi) * 130)
+    return body, x, y, progress
 
 
 def roof_detail_segment(
@@ -879,6 +959,23 @@ class GameApp:
                     "point": point,
                 }))
 
+        for index, point in enumerate(STREETLIGHT_POSITIONS):
+            gap = distance(position, point)
+            if gap <= 78:
+                installed = self.state.streetlights_installed[index]
+                site_name = STREETLIGHT_SITE_LABELS[index]
+                prompt = (
+                    f"{site_name} 가로등 · 저녁부터 새벽까지 자동 점등"
+                    if installed
+                    else f"{site_name} 가로등 설치 ({STREETLIGHT_COST:,}코인)"
+                )
+                candidates.append((gap, {
+                    "kind": "streetlight",
+                    "index": index,
+                    "prompt": prompt,
+                    "point": point,
+                }))
+
         order = self.state.current_order
         craft_prompt = (
             f"주문 스무디 만들기 · {order.short_text()}"
@@ -987,6 +1084,12 @@ class GameApp:
             self.selected_facility = target["key"]
             self.overlay = "facility"
             return
+        elif kind == "streetlight":
+            ok, message = self.state.buy_streetlight(target["index"])
+            if ok:
+                self.spawn_particles(
+                    (target["point"][0], target["point"][1] - 82), GOLD, 24
+                )
         elif kind == "save":
             self.save(announce=True)
             return
@@ -1709,6 +1812,48 @@ class GameApp:
         )
         self.text(label, 15, INK, sign.centerx, sign.centery, center=True)
 
+    def draw_streetlight(self, index: int, point: tuple[int, int]) -> None:
+        x, y = self.world_to_screen(point)
+        if not (-100 < x < SCREEN_W + 100 and -150 < y < SCREEN_H + 80):
+            return
+        installed = self.state.streetlights_installed[index]
+        site_name = STREETLIGHT_SITE_LABELS[index]
+        pygame.draw.ellipse(self.screen, (61, 105, 50), (x - 25, y - 7, 50, 14))
+        if not installed:
+            pygame.draw.circle(self.screen, WOOD_DARK, (x, y), 15)
+            pygame.draw.circle(self.screen, (187, 142, 78), (x, y), 10)
+            pygame.draw.rect(self.screen, WOOD_DARK, (x - 3, y - 31, 6, 28))
+            sign_width = max(122, self.fonts[13].size(site_name)[0] + 28)
+            sign = pygame.Rect(x - sign_width // 2, y - 78, sign_width, 42)
+            rounded_rect(self.screen, sign, (244, 216, 151), 8, WOOD_DARK, 3)
+            self.text(site_name, 13, INK, sign.centerx, sign.y + 7, center=True)
+            self.text(f"{STREETLIGHT_COST:,}코인", 13, BLUEBERRY_DARK,
+                      sign.centerx, sign.y + 25, center=True)
+            return
+
+        period = day_period_for_phase(self.game_clock()[3])
+        is_lit = period in ("저녁", "밤", "새벽")
+        post_color = (69, 66, 75)
+        pygame.draw.rect(self.screen, (39, 38, 45), (x - 8, y - 82, 16, 84))
+        pygame.draw.rect(self.screen, post_color, (x - 4, y - 79, 8, 78))
+        pygame.draw.rect(self.screen, (42, 40, 47), (x - 17, y - 7, 34, 9))
+        pygame.draw.line(self.screen, (39, 38, 45), (x, y - 78), (x + 22, y - 91), 7)
+        pygame.draw.line(self.screen, post_color, (x, y - 78), (x + 21, y - 91), 3)
+        pygame.draw.rect(self.screen, (43, 40, 47), (x + 13, y - 98, 25, 8))
+        pygame.draw.polygon(
+            self.screen,
+            (58, 54, 60),
+            [(x + 15, y - 90), (x + 36, y - 90), (x + 31, y - 76), (x + 20, y - 76)],
+        )
+        bulb_color = (255, 220, 112) if is_lit else (218, 210, 174)
+        pygame.draw.rect(self.screen, bulb_color, (x + 20, y - 89, 11, 12))
+        if is_lit:
+            pygame.draw.circle(self.screen, (255, 235, 150), (x + 25, y - 82), 5)
+
+    def draw_streetlights(self) -> None:
+        for index, point in enumerate(STREETLIGHT_POSITIONS):
+            self.draw_streetlight(index, point)
+
     def draw_facility(self, key: str, world_rect: pygame.Rect) -> None:
         rect = self.rect_to_screen(world_rect)
         if rect.right < -80 or rect.left > SCREEN_W + 80 or rect.bottom < -100 or rect.top > SCREEN_H + 80:
@@ -1959,6 +2104,7 @@ class GameApp:
         self.draw_market()
         self.draw_smoothie_cart()
         self.draw_festival_decorations()
+        self.draw_streetlights()
         customers: list[
             tuple[tuple[float, float], int, bool, CustomerOrder | None, bool]
         ] = [
@@ -2009,6 +2155,11 @@ class GameApp:
             return "익은 블루베리 나무 가까이 가서 E로 수확하세요."
         if state.blueberries < 3 and state.smoothies_sold == 0:
             return "밭을 돌보거나 남쪽 시장에서 생과를 팔아 보세요."
+        if (
+            not all(state.streetlights_installed)
+            and state.money >= STREETLIGHT_COST
+        ):
+            return "길가의 가로등 부지에서 E를 눌러 밤길을 밝혀 보세요."
         if state.active_plots < MAX_PLOTS and state.money >= state.land_cost:
             return f"확장 간판에서 다음 텃밭을 {state.land_cost:,}코인에 살 수 있어요."
         order = state.current_order
@@ -2025,22 +2176,112 @@ class GameApp:
         elapsed = max(0.0, self.state.game_elapsed_seconds)
         day = int(elapsed // DAY_SECONDS) + 1
         phase = (elapsed % DAY_SECONDS) / DAY_SECONDS
-        total_minutes = 6 * 60 + int(phase * 16 * 60)
+        total_minutes = clock_minutes_for_phase(phase)
         return day, total_minutes // 60, total_minutes % 60, phase
 
     def draw_lighting(self) -> None:
         _day, _hour, _minute, phase = self.game_clock()
-        if phase < 0.12:
-            alpha = int((0.12 - phase) / 0.12 * 22)
-            color = (111, 73, 105, alpha)
-        elif phase > 0.72:
-            alpha = min(68, int((phase - 0.72) / 0.28 * 68))
-            color = (35, 43, 89, alpha)
-        else:
+        period = day_period_for_phase(phase)
+        red, green, blue, alpha = lighting_color_for_phase(phase)
+        if alpha <= 0:
             return
+        color_rgb = (red, green, blue)
         overlay = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
-        overlay.fill(color)
+        overlay.fill((*color_rgb, alpha))
+
+        if period in ("저녁", "밤", "새벽"):
+            for installed, point in zip(
+                self.state.streetlights_installed,
+                STREETLIGHT_POSITIONS,
+            ):
+                if not installed:
+                    continue
+                lamp_x, lamp_y = self.world_to_screen((point[0] + 25, point[1] - 82))
+                if not (-170 < lamp_x < SCREEN_W + 170 and -170 < lamp_y < SCREEN_H + 170):
+                    continue
+                pygame.draw.circle(
+                    overlay,
+                    (*color_rgb, round(alpha * 0.80)),
+                    (lamp_x, lamp_y),
+                    155,
+                )
+                pygame.draw.circle(
+                    overlay,
+                    (*color_rgb, round(alpha * 0.45)),
+                    (lamp_x, lamp_y),
+                    112,
+                )
+                pygame.draw.circle(
+                    overlay,
+                    (*color_rgb, round(alpha * 0.10)),
+                    (lamp_x, lamp_y),
+                    67,
+                )
         self.screen.blit(overlay, (0, 0))
+
+        if period in ("저녁", "밤", "새벽"):
+            for installed, point in zip(
+                self.state.streetlights_installed,
+                STREETLIGHT_POSITIONS,
+            ):
+                if not installed:
+                    continue
+                lamp_x, lamp_y = self.world_to_screen((point[0] + 25, point[1] - 82))
+                if not (-120 < lamp_x < SCREEN_W + 120 and -120 < lamp_y < SCREEN_H + 120):
+                    continue
+                glow = pygame.Surface((150, 150), pygame.SRCALPHA)
+                pygame.draw.circle(glow, (255, 195, 80, 12), (75, 75), 70)
+                pygame.draw.circle(glow, (255, 218, 118, 24), (75, 75), 39)
+                pygame.draw.circle(glow, (255, 240, 177, 62), (75, 75), 12)
+                self.screen.blit(glow, (lamp_x - 75, lamp_y - 75))
+
+    def draw_celestial_cycle(self) -> None:
+        day, _hour, _minute, phase = self.game_clock()
+        body, x, y, progress = celestial_position_for_phase(phase)
+
+        if body == "moon":
+            star_strength = max(0.0, math.sin(progress * math.pi))
+            if star_strength > 0.03:
+                stars = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
+                for index in range(24):
+                    star_x = (index * 137 + 61) % SCREEN_W
+                    star_y = 108 + (index * 73) % 270
+                    twinkle = 0.72 + 0.28 * math.sin(time.time() * 2.4 + index)
+                    alpha = round(145 * star_strength * twinkle)
+                    size = 2 if index % 4 else 3
+                    pygame.draw.rect(
+                        stars,
+                        (223, 232, 255, alpha),
+                        (star_x, star_y, size, size),
+                    )
+                self.screen.blit(stars, (0, 0))
+
+        if not (-80 < x < SCREEN_W + 80):
+            return
+        halo = pygame.Surface((112, 112), pygame.SRCALPHA)
+        if body == "sun":
+            pygame.draw.circle(halo, (255, 203, 73, 18), (56, 56), 52)
+            pygame.draw.circle(halo, (255, 222, 104, 30), (56, 56), 38)
+            self.screen.blit(halo, (x - 56, y - 56))
+            pygame.draw.rect(self.screen, (224, 143, 37), (x - 21, y - 21, 42, 42))
+            pygame.draw.rect(self.screen, (255, 205, 66), (x - 17, y - 17, 34, 34))
+            pygame.draw.rect(self.screen, (255, 235, 126), (x - 11, y - 11, 22, 22))
+            for ray_x, ray_y in ((-30, -4), (26, -4), (-4, -30), (-4, 26)):
+                pygame.draw.rect(self.screen, (255, 211, 75), (x + ray_x, y + ray_y, 8, 8))
+        else:
+            pygame.draw.circle(halo, (165, 196, 239, 16), (56, 56), 50)
+            pygame.draw.circle(halo, (205, 222, 246, 28), (56, 56), 35)
+            self.screen.blit(halo, (x - 56, y - 56))
+            pygame.draw.rect(self.screen, (135, 160, 201), (x - 20, y - 20, 40, 40))
+            pygame.draw.rect(self.screen, (224, 234, 238), (x - 16, y - 16, 32, 32))
+            moon_phase = day % 4
+            if moon_phase in (1, 3):
+                cover_x = x - 4 if moon_phase == 1 else x - 14
+                pygame.draw.rect(self.screen, (94, 108, 148), (cover_x, y - 16, 18, 32))
+            elif moon_phase == 2:
+                pygame.draw.rect(self.screen, (94, 108, 148), (x, y - 16, 16, 32))
+            pygame.draw.rect(self.screen, (183, 197, 211), (x - 12, y - 10, 6, 6))
+            pygame.draw.rect(self.screen, (183, 197, 211), (x + 5, y + 6, 7, 7))
 
     def draw_weather_effects(self) -> None:
         weather = self.state.weather
@@ -2106,10 +2347,11 @@ class GameApp:
         pygame.draw.rect(self.screen, WOOD_DARK, right.inflate(6, 6))
         pygame.draw.rect(self.screen, (224, 184, 111), right)
         pygame.draw.rect(self.screen, (247, 218, 148), right.inflate(-8, -8))
-        day, hour, minute, _phase = self.game_clock()
+        day, hour, minute, phase = self.game_clock()
         season, season_day, _year = season_for_day(day)
         self.text(f"{day}일차", 13, MUTED, 1013, 23)
-        self.text(f"{hour:02d}:{minute:02d}", 22, INK, 1013, 43)
+        period = day_period_for_phase(phase)
+        self.text(f"{hour:02d}:{minute:02d} {period}", 18, INK, 1013, 45)
         self.text(f"{season} {season_day}/{DAYS_PER_SEASON} · {WEATHER_LABELS[self.state.weather]}",
                   13, INK, 1088, 24)
         self.text(f"등급 {self.state.farm_rank} · 평판 {self.state.reputation}",
@@ -2735,7 +2977,7 @@ class GameApp:
             ("생산 시설", "남쪽 시설 앞 E", "벌통·제빙기·젖소 축사를 짓고 생산품을 받아요."),
             ("손님·평판", "정확한 주문 판매", "평판 등급을 올리면 시설과 VIP 손님이 해금돼요."),
             ("제조·판매", "블렌더 E → +/- · 5/6", "주문을 맞추고 희귀 재료를 골라 3초 동안 갈아요."),
-            ("달력·축제", "7일마다 계절 변경", "하루 목표를 달성하고 여름 마지막 날 축제에 참여해요."),
+            ("낮·밤·축제", "가로등 부지 E", "해와 달이 움직여요. 3,000코인 가로등으로 밤길을 밝히세요."),
         ]
         y = 176
         for title, control, body in rows:
@@ -2761,6 +3003,7 @@ class GameApp:
         # some macOS/SDL combinations. Draw directly to the display surface.
         self.draw_world()
         self.draw_lighting()
+        self.draw_celestial_cycle()
         self.draw_weather_effects()
         self.draw_impact_flash()
         self.draw_action_effects()

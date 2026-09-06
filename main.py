@@ -59,8 +59,9 @@ WORLD_LEFT = -WORLD_EDGE_MARGIN
 WORLD_TOP = -WORLD_EDGE_MARGIN
 WORLD_RIGHT = WORLD_W + WORLD_EDGE_MARGIN
 WORLD_BOTTOM = WORLD_H + WORLD_EDGE_MARGIN
-FPS = 120
+FPS = 165
 PLAYER_SPEED = 235.0
+CAMERA_FOLLOW_SPEED = 8.5
 DAY_SECONDS = GAME_DAY_SECONDS
 CUSTOMER_RETURN_SECONDS = 14.0
 BLENDER_DURATION = 3.0
@@ -197,6 +198,18 @@ TREE_POSITIONS = [
     (2150, 1040), (2180, 1580), (1420, 1420),
     (1080, 1390), (700, 1420), (320, 1380),
 ]
+STATIC_OBSTACLES = (
+    HOUSE,
+    SHOP,
+    CAFE,
+    MARKET,
+    SMOOTHIE_CART,
+    POND.inflate(-34, -30),
+    BEEHIVE,
+    ICE_MAKER,
+    COW_BARN,
+    *(pygame.Rect(x - 14, y - 8, 28, 32) for x, y in TREE_POSITIONS),
+)
 
 FISH_KEYS = tuple(FISH_PRICES)
 FURNITURE_KEYS = tuple(FURNITURE_COSTS)
@@ -447,6 +460,9 @@ class GameApp:
             size: pygame.font.Font(font_path, size)
             for size in (13, 14, 15, 16, 17, 18, 20, 22, 25, 28, 32, 38)
         }
+        self._text_cache: dict[
+            tuple[str, int, tuple[int, int, int]], pygame.Surface
+        ] = {}
         load_errors: list[Exception] = []
         self.state = GameState.load(SAVE_PATH, on_error=load_errors.append)
         self.player = pygame.Vector2(self.state.player_x, self.state.player_y)
@@ -531,6 +547,13 @@ class GameApp:
         pygame.draw.circle(self._lamp_glow, (255, 195, 80, 12), (75, 75), 70)
         pygame.draw.circle(self._lamp_glow, (255, 218, 118, 24), (75, 75), 39)
         pygame.draw.circle(self._lamp_glow, (255, 240, 177, 62), (75, 75), 12)
+        self._stars_overlay = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
+        self._sun_halo = pygame.Surface((112, 112), pygame.SRCALPHA)
+        pygame.draw.circle(self._sun_halo, (255, 203, 73, 18), (56, 56), 52)
+        pygame.draw.circle(self._sun_halo, (255, 222, 104, 30), (56, 56), 38)
+        self._moon_halo = pygame.Surface((112, 112), pygame.SRCALPHA)
+        pygame.draw.circle(self._moon_halo, (165, 196, 239, 16), (56, 56), 50)
+        pygame.draw.circle(self._moon_halo, (205, 222, 246, 28), (56, 56), 35)
 
     def _make_flowers(self) -> list[tuple[int, int, tuple[int, int, int]]]:
         flowers = []
@@ -941,7 +964,13 @@ class GameApp:
 
     def text(self, value: str, size: int, color: tuple[int, int, int], x: int, y: int,
              *, center: bool = False) -> pygame.Rect:
-        image = self.fonts[size].render(value, True, color)
+        cache_key = (value, size, color)
+        image = self._text_cache.get(cache_key)
+        if image is None:
+            image = self.fonts[size].render(value, True, color)
+            if len(self._text_cache) >= 512:
+                self._text_cache.clear()
+            self._text_cache[cache_key] = image
         rect = image.get_rect(center=(x, y)) if center else image.get_rect(topleft=(x, y))
         self.screen.blit(image, rect)
         return rect
@@ -987,13 +1016,8 @@ class GameApp:
     def _feet_rect(self, x: float, y: float) -> pygame.Rect:
         return pygame.Rect(round(x - 13), round(y - 13), 26, 20)
 
-    def _obstacles(self) -> list[pygame.Rect]:
-        obstacles = [
-            HOUSE, SHOP, CAFE, MARKET, SMOOTHIE_CART, POND.inflate(-34, -30),
-            BEEHIVE, ICE_MAKER, COW_BARN,
-        ]
-        obstacles.extend(pygame.Rect(x - 14, y - 8, 28, 32) for x, y in TREE_POSITIONS)
-        return obstacles
+    def _obstacles(self) -> tuple[pygame.Rect, ...]:
+        return STATIC_OBSTACLES
 
     def _collides(self, x: float, y: float) -> bool:
         feet = self._feet_rect(x, y)
@@ -1045,7 +1069,8 @@ class GameApp:
                     self.overlay = "daily_report"
                     self.save()
         target = self._camera_target()
-        self.camera += (target - self.camera) * min(1.0, dt * 6.5)
+        camera_response = 1.0 - math.exp(-CAMERA_FOLLOW_SPEED * max(0.0, dt))
+        self.camera += (target - self.camera) * camera_response
         for particle in self.particles:
             particle.update(dt)
         self.particles = [particle for particle in self.particles if particle.life > 0]
@@ -2923,7 +2948,8 @@ class GameApp:
         if body == "moon":
             star_strength = max(0.0, math.sin(progress * math.pi))
             if star_strength > 0.03:
-                stars = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
+                stars = self._stars_overlay
+                stars.fill((0, 0, 0, 0))
                 for index in range(24):
                     star_x = (index * 137 + 61) % SCREEN_W
                     star_y = 108 + (index * 73) % 270
@@ -2939,20 +2965,15 @@ class GameApp:
 
         if not (-80 < x < SCREEN_W + 80):
             return
-        halo = pygame.Surface((112, 112), pygame.SRCALPHA)
         if body == "sun":
-            pygame.draw.circle(halo, (255, 203, 73, 18), (56, 56), 52)
-            pygame.draw.circle(halo, (255, 222, 104, 30), (56, 56), 38)
-            self.screen.blit(halo, (x - 56, y - 56))
+            self.screen.blit(self._sun_halo, (x - 56, y - 56))
             pygame.draw.rect(self.screen, (224, 143, 37), (x - 21, y - 21, 42, 42))
             pygame.draw.rect(self.screen, (255, 205, 66), (x - 17, y - 17, 34, 34))
             pygame.draw.rect(self.screen, (255, 235, 126), (x - 11, y - 11, 22, 22))
             for ray_x, ray_y in ((-30, -4), (26, -4), (-4, -30), (-4, 26)):
                 pygame.draw.rect(self.screen, (255, 211, 75), (x + ray_x, y + ray_y, 8, 8))
         else:
-            pygame.draw.circle(halo, (165, 196, 239, 16), (56, 56), 50)
-            pygame.draw.circle(halo, (205, 222, 246, 28), (56, 56), 35)
-            self.screen.blit(halo, (x - 56, y - 56))
+            self.screen.blit(self._moon_halo, (x - 56, y - 56))
             pygame.draw.rect(self.screen, (135, 160, 201), (x - 20, y - 20, 40, 40))
             pygame.draw.rect(self.screen, (224, 234, 238), (x - 16, y - 16, 32, 32))
             moon_phase = day % 4

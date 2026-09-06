@@ -135,6 +135,20 @@ class HarvestEventTests(unittest.TestCase):
                 for frame in frames)
         )
 
+    def test_high_refresh_target_and_reused_render_resources(self):
+        self.assertGreaterEqual(main.FPS, 165)
+        self.assertIs(self.app._obstacles(), self.app._obstacles())
+        self.assertIs(self.app._obstacles(), main.STATIC_OBSTACLES)
+        self.assertEqual(self.app._sun_halo.get_size(), (112, 112))
+        self.assertEqual(self.app._moon_halo.get_size(), (112, 112))
+        self.assertEqual(self.app._stars_overlay.get_size(), (main.SCREEN_W, main.SCREEN_H))
+
+        key = ("반복 글자", 13, main.INK)
+        self.app.text(*key, 20, 20)
+        cached = self.app._text_cache[key]
+        self.app.text(*key, 20, 20)
+        self.assertIs(self.app._text_cache[key], cached)
+
     def test_user_ingredient_icons_are_extracted_with_transparent_backgrounds(self):
         expected = {"milk", "blueberries", "ice", "honey"}
         self.assertEqual(self.app.ingredient_icon_error, "")

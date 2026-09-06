@@ -3209,8 +3209,8 @@ class GameApp:
         )
         inventory_label = (
             f"꿀{compact_hud_number(self.state.honey)} "
-            f"우{compact_hud_number(self.state.milk)} "
-            f"얼{compact_hud_number(self.state.ice)}"
+            f"우유{compact_hud_number(self.state.milk)} "
+            f"얼음{compact_hud_number(self.state.ice)}"
         )
         day_rect = pygame.Rect(847, 10, 42, 20)
         season_rect = pygame.Rect(893, 10, 247, 20)

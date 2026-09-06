@@ -460,6 +460,9 @@ class HarvestEventTests(unittest.TestCase):
     def test_status_hud_text_does_not_overlap(self):
         self.app.state.game_elapsed_seconds = main.DAY_SECONDS + 62
         self.app.state.reputation = 15
+        self.app.state.honey = 20
+        self.app.state.milk = 34
+        self.app.state.ice = 6
         drawn: dict[str, pygame.Rect] = {}
         original_text = self.app.text
 
@@ -475,14 +478,17 @@ class HarvestEventTests(unittest.TestCase):
         season_label = "봄 2/7 · 비"
         time_label = "07:02 아침"
         rank_label = "등급 2 · 평판 15"
+        inventory_label = "꿀20 우유34 얼음6"
         help_label = "도움말 H"
         for first, second in (
             (day_label, season_label),
             (season_label, help_label),
             (time_label, rank_label),
             (rank_label, help_label),
+            (inventory_label, help_label),
         ):
             self.assertFalse(drawn[first].colliderect(drawn[second]))
+        self.assertIn(inventory_label, drawn)
 
     def test_large_hud_amounts_are_compact_and_stay_inside_stat_cells(self):
         values = (9_876_543_210, 1_234_567, 87_654_321, 234_567_890)

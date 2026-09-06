@@ -213,33 +213,49 @@ class GameStateTests(unittest.TestCase):
         self.assertEqual(state.money, 0)
         self.assertEqual(state.land_cost, second_cost + LAND_COST_STEP)
 
-    def test_removed_streetlight_sites_cannot_charge_money(self):
+    def test_streetlights_cost_three_thousand_and_persist(self):
         state = GameState.new(now=100.0)
-        state.money = STREETLIGHT_COST
-        for index in range(8):
+        self.assertEqual(state.streetlights_installed, [False] * STREETLIGHT_COUNT)
+        state.money = STREETLIGHT_COST * STREETLIGHT_COUNT
+        for index in range(STREETLIGHT_COUNT):
             ok, _message = state.buy_streetlight(index)
-            self.assertFalse(ok)
-        self.assertEqual(state.money, STREETLIGHT_COST)
-        self.assertEqual(state.daily_money_spent, 0)
-        self.assertEqual(state.streetlights_installed, [])
+            self.assertTrue(ok)
+        self.assertEqual(state.money, 0)
+        self.assertEqual(state.daily_money_spent, STREETLIGHT_COST * STREETLIGHT_COUNT)
+        self.assertEqual(state.streetlights_installed, [True] * STREETLIGHT_COUNT)
 
-    def test_old_saved_lamps_do_not_return_after_sites_are_removed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "save.json"
+            state.save(path)
+            self.assertEqual(
+                GameState.load(path).streetlights_installed,
+                [True] * STREETLIGHT_COUNT,
+            )
+
+    def test_old_saved_lamps_do_not_move_to_new_photo_sites(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "save.json"
             state = GameState.new(now=100.0)
             state.money = 4_567
             state.game_elapsed_seconds = 2.5 * GAME_DAY_SECONDS
             data = state.to_dict()
+            data.pop("streetlight_layout_version")
             for previous in ([True, False, True], [True] * 6, [True] * 8):
                 with self.subTest(previous=previous):
                     data["streetlights_installed"] = previous
                     path.write_text(json.dumps(data), encoding="utf-8")
                     loaded = GameState.load(path, now=101.0)
-                    self.assertEqual(loaded.streetlights_installed, [])
+                    self.assertEqual(
+                        loaded.streetlights_installed,
+                        [False] * STREETLIGHT_COUNT,
+                    )
                     self.assertEqual(loaded.money, 4_567)
                     self.assertEqual(loaded.current_day, state.current_day)
                     loaded.save(path)
-                    self.assertEqual(GameState.load(path).streetlights_installed, [])
+                    self.assertEqual(
+                        GameState.load(path).streetlights_installed,
+                        [False] * STREETLIGHT_COUNT,
+                    )
 
     def test_tree_drop_probabilities_and_daily_shake_limit(self):
         self.assertEqual(

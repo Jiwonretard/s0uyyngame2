@@ -53,8 +53,8 @@ REPUTATION_THRESHOLDS = (0, 8, 25, 55, 95)
 MAX_FACILITY_LEVEL = 3
 FACILITY_KEYS = ("beehive", "ice_maker", "cow_barn")
 STREETLIGHT_COST = 3_000
-# No active sites until the player provides a new placement reference.
-STREETLIGHT_COUNT = 0
+STREETLIGHT_COUNT = 5
+STREETLIGHT_LAYOUT_VERSION = 2
 FACILITY_CONFIG = {
     "beehive": {
         "name": "벌통",
@@ -1056,6 +1056,7 @@ class GameState:
     def to_dict(self) -> dict:
         data = asdict(self)
         data["save_version"] = SAVE_VERSION
+        data["streetlight_layout_version"] = STREETLIGHT_LAYOUT_VERSION
         elapsed = max(0.0, float(self.game_elapsed_seconds))
         data["calendar_day"] = self.current_day
         data["day_progress"] = (elapsed % GAME_DAY_SECONDS) / GAME_DAY_SECONDS
@@ -1097,6 +1098,7 @@ class GameState:
             order_data = raw.pop("customer_orders", [])
             prepared_order_data = raw.pop("prepared_order", None)
             raw.pop("save_version", None)
+            streetlight_layout_version = raw.pop("streetlight_layout_version", None)
             raw_elapsed = max(0.0, float(raw.get("game_elapsed_seconds", 0.0)))
             if saved_calendar_day is not None and saved_day_progress is not None:
                 calendar_day = max(1, int(saved_calendar_day))
@@ -1177,6 +1179,10 @@ class GameState:
                 if isinstance(state.streetlights_installed, list)
                 else []
             )
+            # Sites were deliberately relocated after the old layout was
+            # removed. Never carry installed flags onto unrelated new places.
+            if streetlight_layout_version != STREETLIGHT_LAYOUT_VERSION:
+                raw_streetlights = []
             state.streetlights_installed = [
                 bool(raw_streetlights[index])
                 if index < len(raw_streetlights)

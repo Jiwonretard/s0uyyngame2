@@ -300,37 +300,44 @@ class HarvestEventTests(unittest.TestCase):
         self.app.draw_celestial_cycle()
         self.assertGreater(sum(self.app.screen.get_at(sun[1:3])[:3]), 0)
 
-    def test_removed_lamps_have_no_signs_interactions_or_night_glow(self):
+    def test_photo_streetlight_sites_are_interactive_and_light_the_night(self):
         self.assertEqual(len(main.STREETLIGHT_POSITIONS), main.STREETLIGHT_COUNT)
         self.assertEqual(len(main.STREETLIGHT_SITE_LABELS), main.STREETLIGHT_COUNT)
-        self.app.state.game_elapsed_seconds = main.DAY_SECONDS * 0.75
-        self.app.state.streetlights_installed = [True] * 8
-        previous_sites = (
-            (500, 355), (970, 820), (410, 1135), (1640, 475),
-            (1425, 1215), (2010, 1090), (1550, 630), (1525, 50),
+        self.assertEqual(
+            main.STREETLIGHT_POSITIONS,
+            (
+                (1550, 630), (1525, 50), (1280, 185),
+                (-10, 570), (-10, 970),
+            ),
         )
-        for point in previous_sites:
+        self.app.state.streetlights_installed = [False] * main.STREETLIGHT_COUNT
+        for index, point in enumerate(main.STREETLIGHT_POSITIONS):
             with self.subTest(point=point):
                 self.app.player.update(*point)
                 self.app._snap_camera()
                 target = self.app.nearest_interaction()
-                self.assertTrue(target is None or target["kind"] != "streetlight")
-                self.app.screen.fill((150, 150, 150))
-                self.app.draw_streetlights()
-                self.app.draw_lighting()
-                # Flat ground must receive uniform night shading, even if an
-                # old in-memory state still contains installed lamp flags.
-                self.assertEqual(
-                    self.app.screen.get_at((640, 260)),
-                    self.app.screen.get_at((20, 620)),
-                )
+                self.assertIsNotNone(target)
+                self.assertEqual(target["kind"], "streetlight")
+                self.assertEqual(target["index"], index)
+
+        self.app.state.streetlights_installed[0] = True
+        self.app.state.game_elapsed_seconds = main.DAY_SECONDS * 0.75
+        self.app.player.update(*main.STREETLIGHT_POSITIONS[0])
+        self.app._snap_camera()
+        self.app.screen.fill((150, 150, 150))
+        self.app.draw_lighting()
+        lamp_x, lamp_y = self.app.world_to_screen((1575, 548))
+        self.assertGreater(
+            sum(self.app.screen.get_at((lamp_x, lamp_y))[:3]),
+            sum(self.app.screen.get_at((20, 620))[:3]),
+        )
         self.app.state.money = 50_000
         self.app.state.berries_harvested = 10
         self.app.state.blueberries = 10
-        self.assertNotIn("가로등", self.app.current_objective())
+        self.assertIn("가로등", self.app.current_objective())
         with patch.object(self.app, "text", wraps=self.app.text) as draw_text:
             self.app.draw_help_overlay()
-        self.assertFalse(any("가로등" in call.args[0] for call in draw_text.call_args_list))
+        self.assertTrue(any("가로등" in call.args[0] for call in draw_text.call_args_list))
 
     def test_app_save_restores_exact_day_and_progress(self):
         self.assertEqual(main.DAY_SECONDS, 24 * 60)
@@ -347,6 +354,49 @@ class HarvestEventTests(unittest.TestCase):
             loaded.game_elapsed_seconds,
             main.DAY_SECONDS * 3.4,
         )
+
+    def test_rain_falls_straight_down_without_diagonal_bands(self):
+        self.app.state.game_elapsed_seconds = main.DAY_SECONDS
+        self.assertEqual(self.app.state.weather, "rain")
+        with patch("pygame.draw.line") as draw_line:
+            self.app.draw_weather_effects()
+        self.assertEqual(draw_line.call_count, main.RAIN_DROP_COUNT)
+        occupied_cells = set()
+        for call in draw_line.call_args_list:
+            start, end = call.args[2], call.args[3]
+            self.assertEqual(start[0], end[0])
+            self.assertGreater(end[1], start[1])
+            occupied_cells.add((start[0] // 160, start[1] // 90))
+        self.assertGreaterEqual(len(occupied_cells), 34)
+        self.assertGreater(len({drop[2] for drop in main.RAIN_DROP_LAYOUT}), 1)
+        self.assertGreater(len({drop[3] for drop in main.RAIN_DROP_LAYOUT}), 1)
+
+    def test_status_hud_text_does_not_overlap(self):
+        self.app.state.game_elapsed_seconds = main.DAY_SECONDS + 62
+        self.app.state.reputation = 15
+        drawn: dict[str, pygame.Rect] = {}
+        original_text = self.app.text
+
+        def capture_text(value, *args, **kwargs):
+            rect = original_text(value, *args, **kwargs)
+            drawn[value] = rect
+            return rect
+
+        with patch.object(self.app, "text", side_effect=capture_text):
+            self.app.draw_hud()
+
+        day_label = "2일차"
+        season_label = "봄 2/7 · 비"
+        time_label = "07:02 아침"
+        rank_label = "등급 2 · 평판 15"
+        help_label = "도움말 H"
+        for first, second in (
+            (day_label, season_label),
+            (season_label, help_label),
+            (time_label, rank_label),
+            (rank_label, help_label),
+        ):
+            self.assertFalse(drawn[first].colliderect(drawn[second]))
 
     def test_b_key_opens_four_by_four_bag_and_e_closes_it(self):
         self.app.state.blueberries = 17

@@ -73,6 +73,21 @@ BGM_DUCK_VOLUME = 0.055
 BGM_VOLUME_CHANGE_SPEED = 2.8
 GAME_START_MINUTES = 6 * 60
 GAME_CLOCK_MINUTES = 24 * 60
+RAIN_DROP_COUNT = 72
+
+# A fixed, independently scattered layout avoids the diagonal bands created
+# when both x and y are simple multiples of the same drop index.
+_rain_layout_rng = random.Random(20260906)
+RAIN_DROP_LAYOUT = tuple(
+    (
+        _rain_layout_rng.randrange(-40, SCREEN_W + 40),
+        _rain_layout_rng.randrange(0, SCREEN_H + 50),
+        _rain_layout_rng.randrange(5, 9),
+        _rain_layout_rng.randrange(18, 29),
+    )
+    for _ in range(RAIN_DROP_COUNT)
+)
+del _rain_layout_rng
 
 INK = (48, 40, 42)
 WHITE = (255, 255, 255)
@@ -113,10 +128,22 @@ FACILITY_RECTS = {
     "cow_barn": COW_BARN,
 }
 
-# All previous sites were removed. New locations will come from the user's
-# next reference photos; no lamps, site signs, or light pools are active.
-STREETLIGHT_POSITIONS: tuple[tuple[int, int], ...] = ()
-STREETLIGHT_SITE_LABELS: tuple[str, ...] = ()
+# These five sites match the player's standing positions in the supplied
+# reference screenshots. No other streetlight sites are active.
+STREETLIGHT_POSITIONS: tuple[tuple[int, int], ...] = (
+    (1550, 630),
+    (1525, 50),
+    (1280, 185),
+    (-10, 570),
+    (-10, 970),
+)
+STREETLIGHT_SITE_LABELS: tuple[str, ...] = (
+    "블렌더 북서쪽",
+    "상점 북서쪽",
+    "연못 북쪽",
+    "블루베리 밭 서쪽",
+    "생산 시설 서쪽",
+)
 
 CUSTOMER_QUEUE_POINTS = [
     (1840, 1322),
@@ -2141,6 +2168,11 @@ class GameApp:
             return "익은 블루베리 나무 가까이 가서 E로 수확하세요."
         if state.blueberries < 3 and state.smoothies_sold == 0:
             return "밭을 돌보거나 남쪽 시장에서 생과를 팔아 보세요."
+        if (
+            state.money >= STREETLIGHT_COST
+            and not all(state.streetlights_installed)
+        ):
+            return f"사진으로 지정한 가로등 부지에서 E를 누르면 {STREETLIGHT_COST:,}코인에 설치할 수 있어요."
         if state.active_plots < MAX_PLOTS and state.money >= state.land_cost:
             return f"확장 간판에서 다음 텃밭을 {state.land_cost:,}코인에 살 수 있어요."
         order = state.current_order
@@ -2271,10 +2303,18 @@ class GameApp:
             veil = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
             veil.fill((62, 90, 126, 22))
             self.screen.blit(veil, (0, 0))
-            for index in range(72):
-                x = (index * 83 + tick * 3) % (SCREEN_W + 80) - 40
-                y = (index * 47 + tick * 7) % (SCREEN_H + 50) - 25
-                pygame.draw.line(self.screen, (173, 210, 231), (x, y), (x - 10, y + 24), 2)
+            for x, y_offset, speed, length in RAIN_DROP_LAYOUT:
+                # X never changes while each drop gets its own unrelated
+                # starting height and speed. This makes the rain both fall
+                # vertically and remain naturally scattered.
+                y = (y_offset + tick * speed) % (SCREEN_H + 50) - 25
+                pygame.draw.line(
+                    self.screen,
+                    (173, 210, 231),
+                    (x, y),
+                    (x, y + length),
+                    2,
+                )
         elif weather == "snow":
             for index in range(58):
                 x = (index * 97 + tick) % (SCREEN_W + 30) - 15
@@ -2330,19 +2370,27 @@ class GameApp:
         pygame.draw.rect(self.screen, (247, 218, 148), right.inflate(-8, -8))
         day, hour, minute, phase = self.game_clock()
         season, season_day, _year = season_for_day(day)
-        self.text(f"{day}일차", 13, MUTED, 1013, 23)
+        day_label = f"{day}일차"
         period = day_period_for_phase(phase)
-        self.text(f"{hour:02d}:{minute:02d} {period}", 18, INK, 1013, 45)
-        self.text(f"{season} {season_day}/{DAYS_PER_SEASON} · {WEATHER_LABELS[self.state.weather]}",
-                  13, INK, 1088, 24)
-        self.text(f"등급 {self.state.farm_rank} · 평판 {self.state.reputation}",
-                  13, BLUEBERRY_DARK, 1088, 46)
-        self.text(f"꿀 {self.state.honey}  우유 {self.state.milk}  얼음 {self.state.ice}",
-                  13, INK, 1013, 69)
-        help_rect = pygame.Rect(1170, 20, 88, 34)
+        time_label = f"{hour:02d}:{minute:02d} {period}"
+        season_label = (
+            f"{season} {season_day}/{DAYS_PER_SEASON} · "
+            f"{WEATHER_LABELS[self.state.weather]}"
+        )
+        rank_label = f"등급 {self.state.farm_rank} · 평판 {self.state.reputation}"
+        inventory_label = (
+            f"꿀 {self.state.honey}  우유 {self.state.milk}  얼음 {self.state.ice}"
+        )
+        self.text(day_label, 13, MUTED, 1013, 22)
+        self.text(season_label, 13, INK, 1070, 22)
+        self.text(time_label, 17, INK, 1013, 47)
+        rank_x = right.right - 8 - self.fonts[13].size(rank_label)[0]
+        self.text(rank_label, 13, BLUEBERRY_DARK, rank_x, 49)
+        self.text(inventory_label, 13, INK, 1013, 70)
+        help_rect = pygame.Rect(1182, 19, 76, 28)
         pygame.draw.rect(self.screen, WOOD_DARK, help_rect.inflate(4, 4))
         pygame.draw.rect(self.screen, PURPLE_LIGHT, help_rect)
-        self.text("도움말 H", 14, BLUEBERRY_DARK, help_rect.centerx, help_rect.centery, center=True)
+        self.text("도움말 H", 13, BLUEBERRY_DARK, help_rect.centerx, help_rect.centery, center=True)
 
     def draw_prompt(self) -> None:
         target = self.nearest_interaction()
@@ -2958,7 +3006,7 @@ class GameApp:
             ("생산 시설", "남쪽 시설 앞 E", "벌통·제빙기·젖소 축사를 짓고 생산품을 받아요."),
             ("손님·평판", "정확한 주문 판매", "평판 등급을 올리면 시설과 VIP 손님이 해금돼요."),
             ("제조·판매", "블렌더 E → +/- · 5/6", "주문을 맞추고 희귀 재료를 골라 3초 동안 갈아요."),
-            ("낮·밤·축제", "하루 24분", "해와 달이 움직이고, 여름 마지막 날에는 축제가 열려요."),
+            ("낮·밤·가로등", "하루 24분 · 부지 E", "사진으로 지정한 5곳에 가로등을 설치하고 밤길을 밝혀요."),
         ]
         y = 176
         for title, control, body in rows:

@@ -50,7 +50,9 @@ from game_state import (
 
 
 SCREEN_W, SCREEN_H = 1280, 720
+VIEWPORT_RECT = pygame.Rect(0, 0, SCREEN_W, SCREEN_H)
 WORLD_W, WORLD_H = 2200, 1500
+CELESTIAL_FIXED_POSITION = (SCREEN_W - 85, 118)
 # Walkable grass around the original map gives edge scenery room to breathe.
 # It also lets the camera scroll above the HUD instead of pinning treetops
 # underneath it when the player visits the northern edge.
@@ -137,6 +139,15 @@ WOOD = (139, 85, 48)
 WOOD_DARK = (77, 47, 38)
 WATER = (70, 146, 166)
 WATER_LIGHT = (126, 199, 197)
+GROUND_TILE_SIZE = 32
+GROUND_PATTERN_TILES = 11
+GROUND_TEXTURE_SIZE = GROUND_TILE_SIZE * GROUND_PATTERN_TILES
+GROUND_PALETTES = {
+    "봄": ((119, 177, 83), (124, 182, 85), (154, 202, 98)),
+    "여름": ((104, 169, 70), (111, 177, 76), (145, 195, 86)),
+    "가을": ((150, 164, 72), (158, 171, 77), (191, 190, 91)),
+    "겨울": ((178, 196, 184), (188, 205, 194), (217, 226, 215)),
+}
 
 HOUSE = pygame.Rect(120, 70, 440, 250)
 SHOP = pygame.Rect(1510, 100, 450, 320)
@@ -152,6 +163,14 @@ FACILITY_RECTS = {
     "ice_maker": ICE_MAKER,
     "cow_barn": COW_BARN,
 }
+PATH_RECTS = (
+    pygame.Rect(330, 285, 105, 690),
+    pygame.Rect(375, 875, 1410, 108),
+    pygame.Rect(1710, 390, 105, 750),
+    pygame.Rect(1115, 920, 105, 320),
+    pygame.Rect(1180, 920, 585, 90),
+    pygame.Rect(300, 925, 610, 70),
+)
 
 # These five sites match the player's standing positions in the supplied
 # reference screenshots. No other streetlight sites are active.
@@ -202,6 +221,9 @@ TREE_POSITIONS = [
     (2150, 1040), (2180, 1580), (1420, 1420),
     (1080, 1390), (700, 1420), (320, 1380),
 ]
+TREE_DRAW_ORDER = tuple(
+    sorted(enumerate(TREE_POSITIONS), key=lambda indexed: indexed[1][1])
+)
 STATIC_OBSTACLES = (
     HOUSE,
     SHOP,
@@ -238,6 +260,7 @@ HOME_EXIT_BUTTON = pygame.Rect(1040, 96, 160, 42)
 HOME_ROTATE_BUTTON = pygame.Rect(845, 490, 110, 42)
 HOME_STORE_BUTTON = pygame.Rect(965, 490, 110, 42)
 HOME_DONE_BUTTON = pygame.Rect(1085, 490, 110, 42)
+_INTERACTION_UNSET = object()
 
 
 def furniture_card_rect(index: int) -> pygame.Rect:
@@ -376,7 +399,7 @@ def lighting_color_for_phase(phase: float) -> tuple[int, int, int, int]:
 
 
 def celestial_position_for_phase(phase: float) -> tuple[str, int, int, float]:
-    """Move the sun and moon east-to-west along matching half-day arcs."""
+    """Keep the active sun or moon fixed at the upper-right of the screen."""
     normalized = max(0.0, min(0.999999, float(phase)))
     if normalized < 0.5:
         body = "sun"
@@ -384,8 +407,7 @@ def celestial_position_for_phase(phase: float) -> tuple[str, int, int, float]:
     else:
         body = "moon"
         progress = (normalized - 0.5) / 0.5
-    x = round(-55 + progress * (SCREEN_W + 110))
-    y = round(260 - math.sin(progress * math.pi) * 130)
+    x, y = CELESTIAL_FIXED_POSITION
     return body, x, y, progress
 
 
@@ -478,6 +500,8 @@ class GameApp:
         self._text_cache: dict[
             tuple[str, int, tuple[int, int, int]], pygame.Surface
         ] = {}
+        self._text_width_cache: dict[tuple[str, int], int] = {}
+        self._ellipsize_cache: dict[tuple[str, int, int], str] = {}
         load_errors: list[Exception] = []
         self.state = GameState.load(SAVE_PATH, on_error=load_errors.append)
         self.player = pygame.Vector2(self.state.player_x, self.state.player_y)
@@ -499,8 +523,9 @@ class GameApp:
         if load_errors:
             self.toast = "저장 파일을 읽지 못해 새 농장으로 시작했어요."
         self.toast_error = bool(load_errors)
-        self.toast_until = time.time() + 4.5
-        self.last_autosave = time.time()
+        self.frame_time = time.time()
+        self.toast_until = self.frame_time + 4.5
+        self.last_autosave = self.frame_time
         self.sale_sound: pygame.mixer.Sound | None = None
         self.sale_channel: pygame.mixer.Channel | None = None
         self.blender_sound: pygame.mixer.Sound | None = None
@@ -552,6 +577,7 @@ class GameApp:
         self.player_frames: dict[str, list[pygame.Surface]] = {}
         self.player_sprite_error = ""
         self._load_player_frames()
+        self._ground_textures = self._make_ground_textures()
         # Reuse full-screen alpha surfaces instead of allocating them every
         # frame. This noticeably lowers pressure on macOS' scaled display.
         self._lighting_overlay = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
@@ -570,6 +596,33 @@ class GameApp:
         self._moon_halo = pygame.Surface((112, 112), pygame.SRCALPHA)
         pygame.draw.circle(self._moon_halo, (165, 196, 239, 16), (56, 56), 50)
         pygame.draw.circle(self._moon_halo, (205, 222, 246, 28), (56, 56), 35)
+        self._shade_overlays: dict[tuple[int, int, int, int], pygame.Surface] = {}
+        self._impact_overlay = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
+
+    @staticmethod
+    def _make_ground_textures() -> dict[str, pygame.Surface]:
+        """Pre-render the repeating seasonal grass instead of rebuilding it per frame."""
+        textures: dict[str, pygame.Surface] = {}
+        for season, (base_grass, tile_grass, grass_detail) in GROUND_PALETTES.items():
+            texture = pygame.Surface((GROUND_TEXTURE_SIZE, GROUND_TEXTURE_SIZE)).convert()
+            texture.fill(base_grass)
+            for tile_y in range(GROUND_PATTERN_TILES):
+                for tile_x in range(GROUND_PATTERN_TILES):
+                    x = tile_x * GROUND_TILE_SIZE
+                    y = tile_y * GROUND_TILE_SIZE
+                    value = (tile_x * 17 + tile_y * 31) % 11
+                    if value in (0, 7):
+                        pygame.draw.rect(
+                            texture,
+                            tile_grass,
+                            (x, y, GROUND_TILE_SIZE, GROUND_TILE_SIZE),
+                        )
+                    if value in (2, 9):
+                        pygame.draw.rect(texture, grass_detail, (x + 8, y + 12, 3, 8))
+                        pygame.draw.rect(texture, GRASS_DARK, (x + 14, y + 8, 3, 12))
+                        pygame.draw.rect(texture, grass_detail, (x + 19, y + 14, 3, 6))
+            textures[season] = texture
+        return textures
 
     def _make_flowers(self) -> list[tuple[int, int, tuple[int, int, int]]]:
         flowers = []
@@ -1001,21 +1054,55 @@ class GameApp:
         image = self._text_cache.get(cache_key)
         if image is None:
             image = self.fonts[size].render(value, True, color)
-            if len(self._text_cache) >= 512:
-                self._text_cache.clear()
+            if len(self._text_cache) >= 1024:
+                self._text_cache.pop(next(iter(self._text_cache)))
             self._text_cache[cache_key] = image
         rect = image.get_rect(center=(x, y)) if center else image.get_rect(topleft=(x, y))
         self.screen.blit(image, rect)
         return rect
 
+    def text_width(self, value: str, size: int) -> int:
+        cache_key = (value, size)
+        width = self._text_width_cache.get(cache_key)
+        if width is None:
+            width = self.fonts[size].size(value)[0]
+            if len(self._text_width_cache) >= 1024:
+                self._text_width_cache.pop(next(iter(self._text_width_cache)))
+            self._text_width_cache[cache_key] = width
+        return width
+
+    def fitted_text(self, value: str, size: int, max_width: int) -> str:
+        cache_key = (value, size, max_width)
+        fitted = self._ellipsize_cache.get(cache_key)
+        if fitted is None:
+            if self.text_width(value, size) <= max_width:
+                fitted = value
+            else:
+                suffix = "…"
+                trimmed = value
+                while trimmed and self.text_width(trimmed + suffix, size) > max_width:
+                    trimmed = trimmed[:-1]
+                fitted = trimmed + suffix
+            if len(self._ellipsize_cache) >= 1024:
+                self._ellipsize_cache.pop(next(iter(self._ellipsize_cache)))
+            self._ellipsize_cache[cache_key] = fitted
+        return fitted
+
+    def draw_screen_shade(self, color: tuple[int, int, int, int]) -> None:
+        shade = self._shade_overlays.get(color)
+        if shade is None:
+            shade = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
+            shade.fill(color)
+            self._shade_overlays[color] = shade
+        self.screen.blit(shade, (0, 0))
+
     def wrapped_text(self, value: str, size: int, color: tuple[int, int, int], rect: pygame.Rect,
                      line_gap: int = 4, center: bool = False) -> int:
-        font = self.fonts[size]
         lines: list[str] = []
         current = ""
         for word in value.split():
             candidate = word if not current else current + " " + word
-            if font.size(candidate)[0] <= rect.width:
+            if self.text_width(candidate, size) <= rect.width:
                 current = candidate
             else:
                 if current:
@@ -1025,10 +1112,10 @@ class GameApp:
             lines.append(current)
         y = rect.y
         for line in lines:
-            image = font.render(line, True, color)
-            x = rect.centerx - image.get_width() // 2 if center else rect.x
-            self.screen.blit(image, (x, y))
-            y += image.get_height() + line_gap
+            line_width = self.text_width(line, size)
+            x = rect.centerx - line_width // 2 if center else rect.x
+            line_rect = self.text(line, size, color, x, y)
+            y += line_rect.height + line_gap
         return y
 
     def notify(self, message: str, error: bool = False) -> None:
@@ -1089,6 +1176,7 @@ class GameApp:
         self.walk_phase += dt * 11.0
 
     def update(self, dt: float) -> None:
+        now = time.time()
         self.move_player(dt)
         if self.overlay is None:
             # The farm calendar advances only while the player is actually in
@@ -1123,7 +1211,6 @@ class GameApp:
             for index, timer in self.tree_shake_timers.items()
             if timer - dt > 0
         }
-        now = time.time()
         if self.overlay is None and self.fishing_phase == "waiting" and now >= self.fishing_bite_at:
             self.fishing_phase = "bite"
             self.fishing_escape_at = now + FISHING_BITE_SECONDS
@@ -1159,7 +1246,7 @@ class GameApp:
                 )
                 or (self.blender_channel and self.blender_channel.get_busy())
             )
-            should_duck = effect_is_playing or time.time() < self.bgm_duck_until
+            should_duck = effect_is_playing or now < self.bgm_duck_until
             target_volume = 0.0 if self.bgm_muted else (
                 BGM_DUCK_VOLUME if should_duck else BGM_NORMAL_VOLUME
             )
@@ -1178,7 +1265,7 @@ class GameApp:
                 self.spawn_particles(
                     (CAFE.centerx, CAFE.bottom + 42), (192, 102, 186), 30
                 )
-        if time.time() - self.last_autosave > AUTOSAVE_SECONDS:
+        if now - self.last_autosave > AUTOSAVE_SECONDS:
             self.save()
 
     def spawn_particles(self, point: tuple[float, float], color: tuple[int, int, int], count: int = 12) -> None:
@@ -2088,33 +2175,41 @@ class GameApp:
             self.overlay = "help"
 
     def draw_ground(self) -> None:
-        ground_palettes = {
-            "봄": ((119, 177, 83), (124, 182, 85), (154, 202, 98)),
-            "여름": ((104, 169, 70), (111, 177, 76), (145, 195, 86)),
-            "가을": ((150, 164, 72), (158, 171, 77), (191, 190, 91)),
-            "겨울": ((178, 196, 184), (188, 205, 194), (217, 226, 215)),
-        }
-        base_grass, tile_grass, grass_detail = ground_palettes[self.state.season]
+        season = self.state.season
+        base_grass = GROUND_PALETTES[season][0]
         self.screen.fill(base_grass)
-        # A 32 px ground grid is textured in small, hard-edged clusters for a
-        # coherent pixel-art look without a transparency-breaking resize pass.
-        tile = 32
-        start_world_x = int(self.camera.x // tile) * tile
-        start_world_y = int(self.camera.y // tile) * tile
-        for world_y in range(start_world_y, int(self.camera.y) + SCREEN_H + tile, tile):
-            for world_x in range(start_world_x, int(self.camera.x) + SCREEN_W + tile, tile):
-                sx, sy = self.world_to_screen((world_x, world_y))
-                value = ((world_x // tile) * 17 + (world_y // tile) * 31) % 11
-                if value in (0, 7):
-                    pygame.draw.rect(self.screen, tile_grass, (sx, sy, tile, tile))
-                if value in (2, 9):
-                    pygame.draw.rect(self.screen, grass_detail, (sx + 8, sy + 12, 3, 8))
-                    pygame.draw.rect(self.screen, GRASS_DARK, (sx + 14, sy + 8, 3, 12))
-                    pygame.draw.rect(self.screen, grass_detail, (sx + 19, sy + 14, 3, 6))
+        texture = self._ground_textures[season]
+        offset_x = -self.camera.x + self.shake_offset.x
+        offset_y = -self.camera.y + self.shake_offset.y
+        start_world_x = (
+            math.floor(
+                (self.camera.x - self.shake_offset.x) / GROUND_TEXTURE_SIZE
+            )
+            * GROUND_TEXTURE_SIZE
+        )
+        start_world_y = (
+            math.floor(
+                (self.camera.y - self.shake_offset.y) / GROUND_TEXTURE_SIZE
+            )
+            * GROUND_TEXTURE_SIZE
+        )
+        for world_y in range(
+            start_world_y,
+            int(self.camera.y) + SCREEN_H + GROUND_TEXTURE_SIZE,
+            GROUND_TEXTURE_SIZE,
+        ):
+            sy = int(world_y + offset_y)
+            for world_x in range(
+                start_world_x,
+                int(self.camera.x) + SCREEN_W + GROUND_TEXTURE_SIZE,
+                GROUND_TEXTURE_SIZE,
+            ):
+                self.screen.blit(texture, (int(world_x + offset_x), sy))
+
+        if season == "겨울":
+            return
         for x, y, color in self.flowers:
-            if self.state.season == "겨울":
-                continue
-            sx, sy = self.world_to_screen((x, y))
+            sx, sy = int(x + offset_x), int(y + offset_y)
             if -8 <= sx <= SCREEN_W + 8 and -8 <= sy <= SCREEN_H + 8:
                 pygame.draw.rect(self.screen, GRASS_DARK, (sx, sy, 2, 7))
                 pygame.draw.rect(self.screen, color, (sx - 3, sy - 2, 8, 4))
@@ -2123,6 +2218,8 @@ class GameApp:
 
     def draw_path(self, rect: pygame.Rect) -> None:
         screen_rect = self.rect_to_screen(rect)
+        if not screen_rect.colliderect(VIEWPORT_RECT.inflate(50, 50)):
+            return
         pygame.draw.rect(self.screen, PATH_EDGE, screen_rect.inflate(8, 8))
         pygame.draw.rect(self.screen, PATH, screen_rect)
         pebble = (181, 137, 89)
@@ -2132,19 +2229,13 @@ class GameApp:
             pygame.draw.rect(self.screen, (229, 193, 128), (x + 13, y + 19, 4, 3))
 
     def draw_paths(self) -> None:
-        paths = [
-            pygame.Rect(330, 285, 105, 690),
-            pygame.Rect(375, 875, 1410, 108),
-            pygame.Rect(1710, 390, 105, 750),
-            pygame.Rect(1115, 920, 105, 320),
-            pygame.Rect(1180, 920, 585, 90),
-            pygame.Rect(300, 925, 610, 70),
-        ]
-        for rect in paths:
+        for rect in PATH_RECTS:
             self.draw_path(rect)
 
     def draw_pond(self) -> None:
         rect = self.rect_to_screen(POND)
+        if not rect.colliderect(VIEWPORT_RECT.inflate(30, 30)):
+            return
         pygame.draw.ellipse(self.screen, (70, 137, 110), rect.inflate(20, 18))
         pygame.draw.ellipse(self.screen, WATER, rect)
         pygame.draw.arc(self.screen, WATER_LIGHT, rect.inflate(-60, -70), 0.2, 2.5, 4)
@@ -2224,6 +2315,8 @@ class GameApp:
 
     def draw_market(self) -> None:
         rect = self.rect_to_screen(MARKET)
+        if not rect.colliderect(VIEWPORT_RECT.inflate(30, 30)):
+            return
         pygame.draw.rect(self.screen, (56, 72, 42), rect.move(12, 12))
         pygame.draw.rect(self.screen, WOOD_DARK, rect.inflate(8, 8))
         pygame.draw.rect(self.screen, WOOD, rect)
@@ -2252,6 +2345,8 @@ class GameApp:
 
     def draw_smoothie_cart(self) -> None:
         rect = self.rect_to_screen(SMOOTHIE_CART)
+        if not rect.colliderect(VIEWPORT_RECT.inflate(30, 30)):
+            return
         pygame.draw.rect(self.screen, (56, 72, 42), rect.move(12, 12))
         pygame.draw.rect(self.screen, WOOD_DARK, rect.inflate(8, 8))
         pygame.draw.rect(self.screen, (198, 164, 209), rect)
@@ -2319,7 +2414,7 @@ class GameApp:
         if not (-60 < x < SCREEN_W + 60 and -110 < y < SCREEN_H + 60):
             return
         skin, hair, shirt = CUSTOMER_STYLES[style % len(CUSTOMER_STYLES)]
-        step = 4 if departing and int(time.time() * 10) % 2 else 0
+        step = 4 if departing and int(self.frame_time * 10) % 2 else 0
 
         pygame.draw.ellipse(self.screen, (55, 98, 47), (x - 22, y - 8, 44, 12))
         pygame.draw.rect(self.screen, INK, (x - 14 + step, y - 20, 10, 20))
@@ -2358,7 +2453,7 @@ class GameApp:
 
         if order is not None and not front and not departing:
             name = order.customer_name
-            name_width = max(58, self.fonts[13].size(name)[0] + 16)
+            name_width = max(58, self.text_width(name, 13) + 16)
             name_tag = pygame.Rect(x - name_width // 2, y - 135, name_width, 24)
             tag_color = (
                 (255, 229, 145) if order.vip
@@ -2416,6 +2511,8 @@ class GameApp:
 
     def draw_farm_fence(self) -> None:
         farm = self.rect_to_screen(pygame.Rect(225, 350, 720, 550))
+        if not farm.colliderect(VIEWPORT_RECT.inflate(70, 70)):
+            return
         color = (177, 119, 63)
         for y in (farm.top, farm.bottom):
             pygame.draw.line(self.screen, WOOD_DARK, (farm.left, y + 3), (farm.right, y + 3), 10)
@@ -2481,9 +2578,11 @@ class GameApp:
             self.text("!", 16, INK, rect.right - 9, rect.top + 8, center=True)
 
     def draw_plots(self) -> None:
-        now = time.time()
+        now = self.frame_time
         for index, world_rect in enumerate(PLOT_RECTS):
             rect = self.rect_to_screen(world_rect)
+            if not rect.colliderect(VIEWPORT_RECT.inflate(12, 12)):
+                continue
             if index >= self.state.active_plots:
                 pygame.draw.rect(self.screen, (104, 156, 78), rect)
                 pygame.draw.rect(self.screen, GRASS_DARK, rect, 4)
@@ -2516,6 +2615,8 @@ class GameApp:
 
     def draw_expansion_sign(self) -> None:
         x, y = self.world_to_screen((980, 650))
+        if not (-110 < x < SCREEN_W + 110 and -70 < y < SCREEN_H + 70):
+            return
         pygame.draw.rect(self.screen, WOOD_DARK, (x - 6, y - 5, 12, 58))
         pygame.draw.rect(self.screen, WOOD, (x - 3, y - 3, 6, 53))
         sign = pygame.Rect(x - 94, y - 45, 188, 48)
@@ -2539,7 +2640,7 @@ class GameApp:
             pygame.draw.circle(self.screen, WOOD_DARK, (x, y), 15)
             pygame.draw.circle(self.screen, (187, 142, 78), (x, y), 10)
             pygame.draw.rect(self.screen, WOOD_DARK, (x - 3, y - 31, 6, 28))
-            sign_width = max(142, self.fonts[13].size(site_name)[0] + 34)
+            sign_width = max(142, self.text_width(site_name, 13) + 34)
             sign = pygame.Rect(x - sign_width // 2, y - 93, sign_width, 54)
             rounded_rect(self.screen, sign, (244, 216, 151), 8, WOOD_DARK, 3)
             self.text(site_name, 14, INK, sign.centerx, sign.y + 16, center=True)
@@ -2620,7 +2721,7 @@ class GameApp:
 
         if level > 0 and key == "beehive":
             for bee_index in range(level + 1):
-                angle = time.time() * 2.2 + bee_index * 2.4
+                angle = self.frame_time * 2.2 + bee_index * 2.4
                 bx = rect.centerx + round(math.cos(angle) * (38 + bee_index * 5))
                 by = rect.centery - 13 + round(math.sin(angle) * 18)
                 pygame.draw.circle(self.screen, INK, (bx, by), 4)
@@ -2639,7 +2740,7 @@ class GameApp:
                 pygame.draw.line(self.screen, CREAM, bale.midtop, bale.midbottom, 2)
 
         label_y = rect.bottom + 19
-        label_width = max(112, self.fonts[14].size(str(config["name"]))[0] + 58)
+        label_width = max(112, self.text_width(str(config["name"]), 14) + 58)
         label = pygame.Rect(rect.centerx - label_width // 2, label_y - 15, label_width, 30)
         rounded_rect(self.screen, label, CREAM, 9, WOOD_DARK, 2)
         suffix = "부지" if level <= 0 else f"Lv.{level}"
@@ -2653,9 +2754,10 @@ class GameApp:
         for key in FACILITY_KEYS:
             self.draw_facility(key, FACILITY_RECTS[key])
 
-    def draw_tree(self, point: tuple[int, int]) -> None:
+    def draw_tree(self, point: tuple[int, int], tree_index: int | None = None) -> None:
         x, y = self.world_to_screen(point)
-        tree_index = TREE_POSITIONS.index(point)
+        if tree_index is None:
+            tree_index = TREE_POSITIONS.index(point)
         shake_timer = self.tree_shake_timers.get(tree_index, 0.0)
         if shake_timer > 0:
             x += round(math.sin((0.65 - shake_timer) * 48) * 7 * (shake_timer / 0.65))
@@ -2671,12 +2773,13 @@ class GameApp:
             pygame.draw.rect(self.screen, GRASS_LIGHT, (x + dx + 9, y + dy + 8, 14, 8))
         pygame.draw.rect(self.screen, (189, 203, 102), (x - 27, y - 96, 10, 10))
 
-    def draw_interaction_marker(self) -> None:
-        target = self.nearest_interaction()
+    def draw_interaction_marker(self, target=_INTERACTION_UNSET) -> None:
+        if target is _INTERACTION_UNSET:
+            target = self.nearest_interaction()
         if target is None or self.overlay is not None:
             return
         x, y = self.world_to_screen(target["point"])
-        pulse = 3 * math.sin(time.time() * 5)
+        pulse = 3 * math.sin(self.frame_time * 5)
         pygame.draw.circle(self.screen, (255, 247, 177), (x, y - 42), int(18 + pulse))
         pygame.draw.circle(self.screen, BLUEBERRY_DARK, (x, y - 42), 15)
         self.text("E", 16, WHITE, x, y - 42, center=True)
@@ -2787,7 +2890,7 @@ class GameApp:
                 if drop.key == "coins"
                 else f"{BAG_ITEM_LABELS[drop.key]} +{drop.amount}"
             )
-            width = self.fonts[13].size(label)[0] + 18
+            width = self.text_width(label, 13) + 18
             badge = pygame.Rect(x - width // 2, y + 21, width, 24)
             rounded_rect(self.screen, badge, CREAM, 7, WOOD_DARK, 2)
             self.text(label, 13, INK, badge.centerx, badge.centery, center=True)
@@ -2811,9 +2914,8 @@ class GameApp:
         if self.impact_timer <= 0:
             return
         alpha = int(42 * self.impact_timer / 0.28)
-        flash = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
-        flash.fill((190, 174, 255, alpha))
-        self.screen.blit(flash, (0, 0))
+        self._impact_overlay.fill((190, 174, 255, alpha))
+        self.screen.blit(self._impact_overlay, (0, 0))
 
     def draw_world_labels(self) -> None:
         labels = [
@@ -2826,12 +2928,14 @@ class GameApp:
         for point, label in labels:
             x, y = self.world_to_screen(point)
             if -150 < x < SCREEN_W + 150 and -40 < y < SCREEN_H + 40:
-                width = self.fonts[14].size(label)[0] + 24
+                width = self.text_width(label, 14) + 24
                 rect = pygame.Rect(x - width // 2, y - 17, width, 29)
                 rounded_rect(self.screen, rect, (255, 250, 225), 10, WOOD_DARK, 2)
                 self.text(label, 14, INK, rect.centerx, rect.centery, center=True)
 
-    def draw_world(self) -> None:
+    def draw_world(self, interaction_target=_INTERACTION_UNSET) -> None:
+        if interaction_target is _INTERACTION_UNSET:
+            interaction_target = self.nearest_interaction()
         self.draw_ground()
         self.draw_paths()
         self.draw_pond()
@@ -2867,8 +2971,9 @@ class GameApp:
             ((customer.x, customer.y), customer.style, True, None, False)
             for customer in self.departing_customers
         )
-        for tree in sorted((tree for tree in TREE_POSITIONS if tree[1] <= self.player.y), key=lambda item: item[1]):
-            self.draw_tree(tree)
+        for tree_index, tree in TREE_DRAW_ORDER:
+            if tree[1] <= self.player.y:
+                self.draw_tree(tree, tree_index)
         for point, style, departing, order, front in sorted(
             (customer for customer in customers if customer[0][1] <= self.player.y),
             key=lambda customer: customer[0][1],
@@ -2876,8 +2981,9 @@ class GameApp:
             self.draw_customer(point, style, departing=departing, order=order, front=front)
         self.draw_particles()
         self.draw_character()
-        for tree in sorted((tree for tree in TREE_POSITIONS if tree[1] > self.player.y), key=lambda item: item[1]):
-            self.draw_tree(tree)
+        for tree_index, tree in TREE_DRAW_ORDER:
+            if tree[1] > self.player.y:
+                self.draw_tree(tree, tree_index)
         for point, style, departing, order, front in sorted(
             (customer for customer in customers if customer[0][1] > self.player.y),
             key=lambda customer: customer[0][1],
@@ -2885,7 +2991,7 @@ class GameApp:
             self.draw_customer(point, style, departing=departing, order=order, front=front)
         # Drops are short-lived feedback, so keep them above the world sprites.
         self.draw_tree_drops()
-        self.draw_interaction_marker()
+        self.draw_interaction_marker(interaction_target)
 
     def current_objective(self) -> str:
         state = self.state
@@ -2985,7 +3091,7 @@ class GameApp:
                 for index in range(24):
                     star_x = (index * 137 + 61) % SCREEN_W
                     star_y = 108 + (index * 73) % 270
-                    twinkle = 0.72 + 0.28 * math.sin(time.time() * 2.4 + index)
+                    twinkle = 0.72 + 0.28 * math.sin(self.frame_time * 2.4 + index)
                     alpha = round(145 * star_strength * twinkle)
                     size = 2 if index % 4 else 3
                     pygame.draw.rect(
@@ -2995,8 +3101,6 @@ class GameApp:
                     )
                 self.screen.blit(stars, (0, 0))
 
-        if not (-80 < x < SCREEN_W + 80):
-            return
         if body == "sun":
             self.screen.blit(self._sun_halo, (x - 56, y - 56))
             pygame.draw.rect(self.screen, (224, 143, 37), (x - 21, y - 21, 42, 42))
@@ -3019,7 +3123,7 @@ class GameApp:
 
     def draw_weather_effects(self) -> None:
         weather = self.state.weather
-        tick = int(time.time() * 100)
+        tick = int(self.frame_time * 100)
         if weather == "rain":
             self.screen.blit(self._rain_veil, (0, 0))
             for x, y_offset, speed, length in RAIN_DROP_LAYOUT:
@@ -3067,8 +3171,8 @@ class GameApp:
             self.text(label, 13, MUTED, text_x, 11)
             value_label = compact_hud_number(value)
             available_width = stat_rect.right - text_x - 2
-            value_size = 14 if self.fonts[14].size(value_label)[0] <= available_width else 13
-            value_label = ellipsize(self.fonts[value_size], value_label, available_width)
+            value_size = 14 if self.text_width(value_label, 14) <= available_width else 13
+            value_label = self.fitted_text(value_label, value_size, available_width)
             self.text(value_label, value_size, INK, text_x, 33)
 
         objective = HUD_OBJECTIVE_RECT
@@ -3081,10 +3185,8 @@ class GameApp:
             f"오늘 목표 · {goal['label']}  {goal_progress}/{goal['target']}",
             13, BLUEBERRY_DARK, objective.x + 13, 12,
         )
-        objective_text = ellipsize(
-            self.fonts[13],
-            self.current_objective(),
-            objective.width - 26,
+        objective_text = self.fitted_text(
+            self.current_objective(), 13, objective.width - 26
         )
         self.text(objective_text, 13, INK, objective.x + 13, 34)
 
@@ -3115,11 +3217,11 @@ class GameApp:
         time_rect = pygame.Rect(847, 32, 88, 20)
         rank_rect = pygame.Rect(939, 32, 120, 20)
         inventory_rect = pygame.Rect(1063, 32, 155, 20)
-        day_label = ellipsize(self.fonts[13], day_label, day_rect.width)
-        season_label = ellipsize(self.fonts[13], season_label, season_rect.width)
-        time_label = ellipsize(self.fonts[15], time_label, time_rect.width)
-        rank_label = ellipsize(self.fonts[13], rank_label, rank_rect.width)
-        inventory_label = ellipsize(self.fonts[13], inventory_label, inventory_rect.width)
+        day_label = self.fitted_text(day_label, 13, day_rect.width)
+        season_label = self.fitted_text(season_label, 13, season_rect.width)
+        time_label = self.fitted_text(time_label, 15, time_rect.width)
+        rank_label = self.fitted_text(rank_label, 13, rank_rect.width)
+        inventory_label = self.fitted_text(inventory_label, 13, inventory_rect.width)
         self.text(day_label, 13, MUTED, day_rect.centerx, 20, center=True)
         self.text(season_label, 13, INK, season_rect.centerx, 20, center=True)
         self.text(time_label, 15, INK, time_rect.centerx, 42, center=True)
@@ -3130,12 +3232,13 @@ class GameApp:
         self.text("도움말 H", 13, BLUEBERRY_DARK,
                   HUD_HELP_RECT.centerx, HUD_HELP_RECT.centery, center=True)
 
-    def draw_prompt(self) -> None:
-        target = self.nearest_interaction()
+    def draw_prompt(self, target=_INTERACTION_UNSET) -> None:
+        if target is _INTERACTION_UNSET:
+            target = self.nearest_interaction()
         if target is None or self.overlay is not None:
             return
         label = "E  " + target["prompt"]
-        width = min(700, max(330, self.fonts[17].size(label)[0] + 58))
+        width = min(700, max(330, self.text_width(label, 17) + 58))
         rect = pygame.Rect((SCREEN_W - width) // 2, 640, width, 58)
         pygame.draw.rect(self.screen, (42, 43, 39), rect.move(6, 6))
         pygame.draw.rect(self.screen, WOOD_DARK, rect.inflate(6, 6))
@@ -3148,9 +3251,9 @@ class GameApp:
         self.text(target["prompt"], 17, INK, rect.x + 65, rect.y + 18)
 
     def draw_toast(self) -> None:
-        if time.time() >= self.toast_until:
+        if self.frame_time >= self.toast_until:
             return
-        width = min(720, max(340, self.fonts[16].size(self.toast)[0] + 50))
+        width = min(720, max(340, self.text_width(self.toast, 16) + 50))
         rect = pygame.Rect((SCREEN_W - width) // 2, 110, width, 44)
         pygame.draw.rect(self.screen, WOOD_DARK, rect.inflate(6, 6))
         pygame.draw.rect(self.screen, (179, 94, 91) if self.toast_error else (80, 112, 78), rect)
@@ -3158,9 +3261,7 @@ class GameApp:
         self.text(self.toast, 16, WHITE, rect.centerx, rect.centery, center=True)
 
     def draw_market_overlay(self) -> None:
-        shade = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
-        shade.fill((31, 26, 39, 172))
-        self.screen.blit(shade, (0, 0))
+        self.draw_screen_shade((31, 26, 39, 172))
         card = pygame.Rect(190, 100, 900, 500)
         pygame.draw.rect(self.screen, (28, 25, 30), card.move(11, 11))
         pygame.draw.rect(self.screen, WOOD_DARK, card.inflate(14, 14))
@@ -3198,9 +3299,7 @@ class GameApp:
                   close.centerx, close.centery, center=True)
 
     def draw_shop_overlay(self) -> None:
-        shade = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
-        shade.fill((31, 26, 39, 165))
-        self.screen.blit(shade, (0, 0))
+        self.draw_screen_shade((31, 26, 39, 165))
         card = pygame.Rect(280, 55, 720, 620)
         pygame.draw.rect(self.screen, (32, 30, 31), card.move(10, 10))
         pygame.draw.rect(self.screen, WOOD_DARK, card.inflate(14, 14))
@@ -3250,9 +3349,7 @@ class GameApp:
                   SHOP_CLOSE_RECT.centerx, SHOP_CLOSE_RECT.centery, center=True)
 
     def draw_fish_market_overlay(self) -> None:
-        shade = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
-        shade.fill((25, 34, 43, 178))
-        self.screen.blit(shade, (0, 0))
+        self.draw_screen_shade((25, 34, 43, 178))
         card = pygame.Rect(145, 65, 990, 600)
         pygame.draw.rect(self.screen, (28, 25, 30), card.move(11, 11))
         pygame.draw.rect(self.screen, WOOD_DARK, card.inflate(14, 14))
@@ -3375,9 +3472,7 @@ class GameApp:
                                  round(34 * scale), round(23 * scale)))
 
     def draw_home_overlay(self) -> None:
-        shade = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
-        shade.fill((31, 26, 39, 178))
-        self.screen.blit(shade, (0, 0))
+        self.draw_screen_shade((31, 26, 39, 178))
         room = pygame.Rect(45, 30, 1190, 660)
         pygame.draw.rect(self.screen, (31, 27, 32), room.move(10, 10))
         pygame.draw.rect(self.screen, WOOD_DARK, room.inflate(12, 12))
@@ -3555,9 +3650,7 @@ class GameApp:
                       rect.centerx, rect.y + 97, center=True)
 
     def draw_blender_overlay(self) -> None:
-        shade = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
-        shade.fill((31, 26, 39, 178))
-        self.screen.blit(shade, (0, 0))
+        self.draw_screen_shade((31, 26, 39, 178))
         card = pygame.Rect(200, 45, 880, 620)
         pygame.draw.rect(self.screen, (30, 28, 34), card.move(11, 11))
         pygame.draw.rect(self.screen, WOOD_DARK, card.inflate(14, 14))
@@ -3666,9 +3759,7 @@ class GameApp:
         self.text("나가기", 15, INK, close.centerx, close.centery, center=True)
 
     def draw_blending_overlay(self) -> None:
-        shade = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
-        shade.fill((31, 26, 39, 190))
-        self.screen.blit(shade, (0, 0))
+        self.draw_screen_shade((31, 26, 39, 190))
         card = pygame.Rect(300, 48, 680, 624)
         pygame.draw.rect(self.screen, (27, 25, 31), card.move(12, 12))
         pygame.draw.rect(self.screen, WOOD_DARK, card.inflate(14, 14))
@@ -3776,9 +3867,7 @@ class GameApp:
                   bar.centerx, 638, center=True)
 
     def draw_facility_overlay(self) -> None:
-        shade = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
-        shade.fill((31, 26, 39, 178))
-        self.screen.blit(shade, (0, 0))
+        self.draw_screen_shade((31, 26, 39, 178))
         card = pygame.Rect(280, 55, 720, 620)
         pygame.draw.rect(self.screen, (28, 25, 30), card.move(11, 11))
         pygame.draw.rect(self.screen, WOOD_DARK, card.inflate(14, 14))
@@ -3875,9 +3964,7 @@ class GameApp:
         report = self.state.pending_daily_report
         if not report:
             return
-        shade = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
-        shade.fill((28, 24, 38, 188))
-        self.screen.blit(shade, (0, 0))
+        self.draw_screen_shade((28, 24, 38, 188))
         card = pygame.Rect(300, 42, 680, 638)
         pygame.draw.rect(self.screen, (28, 25, 30), card.move(12, 12))
         pygame.draw.rect(self.screen, WOOD_DARK, card.inflate(14, 14))
@@ -3947,9 +4034,7 @@ class GameApp:
                   close.centerx, close.centery, center=True)
 
     def draw_bag_overlay(self) -> None:
-        shade = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
-        shade.fill((31, 26, 39, 178))
-        self.screen.blit(shade, (0, 0))
+        self.draw_screen_shade((31, 26, 39, 178))
 
         card = pygame.Rect(312, 30, 656, 660)
         pygame.draw.rect(self.screen, (28, 25, 30), card.move(11, 11))
@@ -4060,9 +4145,7 @@ class GameApp:
         self.text("가방 닫기  B / E", 18, WHITE, close.centerx, close.centery, center=True)
 
     def draw_help_overlay(self) -> None:
-        shade = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
-        shade.fill((31, 26, 39, 175))
-        self.screen.blit(shade, (0, 0))
+        self.draw_screen_shade((31, 26, 39, 175))
         card = pygame.Rect(270, 58, 740, 632)
         pygame.draw.rect(self.screen, (32, 30, 31), card.move(10, 10))
         pygame.draw.rect(self.screen, WOOD_DARK, card.inflate(14, 14))
@@ -4101,14 +4184,16 @@ class GameApp:
         # Drawing transparent text and sprites to an intermediate surface before
         # resizing can turn their transparent pixels into solid rectangles on
         # some macOS/SDL combinations. Draw directly to the display surface.
-        self.draw_world()
+        self.frame_time = time.time()
+        interaction_target = self.nearest_interaction() if self.overlay is None else None
+        self.draw_world(interaction_target)
         self.draw_lighting()
         self.draw_celestial_cycle()
         self.draw_weather_effects()
         self.draw_impact_flash()
         self.draw_action_effects()
         self.draw_hud()
-        self.draw_prompt()
+        self.draw_prompt(interaction_target)
         self.draw_toast()
         if self.overlay == "market":
             self.draw_market_overlay()

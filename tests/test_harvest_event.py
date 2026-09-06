@@ -139,15 +139,43 @@ class HarvestEventTests(unittest.TestCase):
         self.assertGreaterEqual(main.FPS, 165)
         self.assertIs(self.app._obstacles(), self.app._obstacles())
         self.assertIs(self.app._obstacles(), main.STATIC_OBSTACLES)
+        self.assertEqual(set(self.app._ground_textures), set(main.GROUND_PALETTES))
+        self.assertTrue(
+            all(
+                texture.get_size()
+                == (main.GROUND_TEXTURE_SIZE, main.GROUND_TEXTURE_SIZE)
+                for texture in self.app._ground_textures.values()
+            )
+        )
         self.assertEqual(self.app._sun_halo.get_size(), (112, 112))
         self.assertEqual(self.app._moon_halo.get_size(), (112, 112))
         self.assertEqual(self.app._stars_overlay.get_size(), (main.SCREEN_W, main.SCREEN_H))
+        self.assertEqual(
+            self.app._impact_overlay.get_size(),
+            (main.SCREEN_W, main.SCREEN_H),
+        )
 
         key = ("반복 글자", 13, main.INK)
         self.app.text(*key, 20, 20)
         cached = self.app._text_cache[key]
         self.app.text(*key, 20, 20)
         self.assertIs(self.app._text_cache[key], cached)
+
+        shade_color = (31, 26, 39, 178)
+        self.app.draw_screen_shade(shade_color)
+        cached_shade = self.app._shade_overlays[shade_color]
+        self.app.draw_screen_shade(shade_color)
+        self.assertIs(self.app._shade_overlays[shade_color], cached_shade)
+
+    def test_draw_calculates_nearest_interaction_only_once(self):
+        with patch.object(
+            self.app,
+            "nearest_interaction",
+            wraps=self.app.nearest_interaction,
+        ) as nearest:
+            self.app.draw()
+
+        self.assertEqual(nearest.call_count, 1)
 
     def test_user_ingredient_icons_are_extracted_with_transparent_backgrounds(self):
         expected = {"milk", "blueberries", "ice", "honey"}
@@ -336,18 +364,27 @@ class HarvestEventTests(unittest.TestCase):
         night_pixel = self.app.screen.get_at((20, 20))[:3]
         self.assertLess(sum(night_pixel), sum(day_pixel))
 
-    def test_pixel_sun_and_moon_cross_matching_sky_arcs(self):
-        sun = main.celestial_position_for_phase(0.25)
-        moon = main.celestial_position_for_phase(0.75)
+    def test_pixel_sun_and_moon_stay_fixed_at_the_upper_right(self):
+        morning_sun = main.celestial_position_for_phase(0.05)
+        afternoon_sun = main.celestial_position_for_phase(0.45)
+        evening_moon = main.celestial_position_for_phase(0.55)
+        late_moon = main.celestial_position_for_phase(0.95)
+        sun = afternoon_sun
+        moon = evening_moon
         self.assertEqual(sun[0], "sun")
         self.assertEqual(moon[0], "moon")
-        self.assertEqual(sun[1:3], moon[1:3])
-        self.assertEqual(sun[1], main.SCREEN_W // 2)
+        self.assertEqual(morning_sun[1:3], main.CELESTIAL_FIXED_POSITION)
+        self.assertEqual(afternoon_sun[1:3], main.CELESTIAL_FIXED_POSITION)
+        self.assertEqual(evening_moon[1:3], main.CELESTIAL_FIXED_POSITION)
+        self.assertEqual(late_moon[1:3], main.CELESTIAL_FIXED_POSITION)
 
         self.app.state.game_elapsed_seconds = main.DAY_SECONDS * 0.25
         self.app.screen.fill((0, 0, 0))
         self.app.draw_celestial_cycle()
-        self.assertGreater(sum(self.app.screen.get_at(sun[1:3])[:3]), 0)
+        self.assertGreater(
+            sum(self.app.screen.get_at(main.CELESTIAL_FIXED_POSITION)[:3]),
+            0,
+        )
 
     def test_photo_streetlight_sites_are_interactive_and_light_the_night(self):
         self.assertEqual(len(main.STREETLIGHT_POSITIONS), main.STREETLIGHT_COUNT)

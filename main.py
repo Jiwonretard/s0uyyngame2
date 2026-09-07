@@ -73,7 +73,7 @@ SAVE_PATH = BASE_DIR / "save_game.json"
 SALE_SOUND_PATH = BASE_DIR / "assets" / "smoothie_sale.wav"
 BLENDER_SOUND_PATH = BASE_DIR / "assets" / "blender_grind.wav"
 BGM_PATH = BASE_DIR / "assets" / "blueberry_morning.ogg"
-PLAYER_SHEET_PATH = BASE_DIR / "assets" / "player_reference_sheet.png"
+PLAYER_SHEET_PATH = BASE_DIR / "assets" / "player_doll_shark_sheet_v1.png"
 INGREDIENT_SOURCE_PATHS = {
     "milk": BASE_DIR / "assets" / "ingredient_milk_source.png",
     "blueberries": BASE_DIR / "assets" / "ingredient_blueberry_source.png",

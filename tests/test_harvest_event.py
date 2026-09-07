@@ -127,6 +127,18 @@ class HarvestEventTests(unittest.TestCase):
         self.assertEqual(self.app.state.blueberries, before + 4)
 
     def test_photo_character_sheet_has_all_movement_frames(self):
+        self.assertEqual(
+            main.PLAYER_SHEET_PATH.name,
+            "player_doll_shark_sheet_v1.png",
+        )
+        sheet = pygame.image.load(str(main.PLAYER_SHEET_PATH)).convert_alpha()
+        self.assertEqual(sheet.get_at((0, 0)).a, 0)
+        sprite_rects = [
+            rect
+            for rect in pygame.mask.from_surface(sheet, 160).get_bounding_rects()
+            if rect.width * rect.height > 20_000
+        ]
+        self.assertEqual(len(sprite_rects), 12)
         self.assertEqual(self.app.player_sprite_error, "")
         self.assertEqual(set(self.app.player_frames), {"down", "left", "right", "up"})
         self.assertTrue(all(len(frames) == 3 for frames in self.app.player_frames.values()))
@@ -134,6 +146,22 @@ class HarvestEventTests(unittest.TestCase):
             all(frame.get_flags() & pygame.SRCALPHA for frames in self.app.player_frames.values()
                 for frame in frames)
         )
+
+    def test_shark_character_keeps_white_clothing_opaque(self):
+        for direction in ("down", "left", "right"):
+            for frame in self.app.player_frames[direction]:
+                white_pixels = sum(
+                    1
+                    for x in range(frame.get_width())
+                    for y in range(frame.get_height())
+                    if (
+                        (color := frame.get_at((x, y))).a > 200
+                        and min(color.r, color.g, color.b) > 220
+                        and max(color.r, color.g, color.b)
+                        - min(color.r, color.g, color.b) < 35
+                    )
+                )
+                self.assertGreater(white_pixels, 100)
 
     def test_high_refresh_target_and_reused_render_resources(self):
         self.assertGreaterEqual(main.FPS, 165)

@@ -763,6 +763,15 @@ class HarvestEventTests(unittest.TestCase):
             self.app.state.facility_levels[key] = 3
             self.app.draw_facility(key, main.FACILITY_RECTS[key])
 
+    def test_facilities_have_clear_space_between_each_building(self):
+        facilities = sorted(main.FACILITY_RECTS.values(), key=lambda rect: rect.left)
+        horizontal_gaps = [
+            right.left - left.right
+            for left, right in zip(facilities, facilities[1:])
+        ]
+
+        self.assertTrue(all(gap >= 100 for gap in horizontal_gaps))
+
     def test_tree_spacing_and_side_back_foot_motion_are_clear(self):
         closest_pair = min(
             math.dist(first, second)

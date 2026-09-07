@@ -155,8 +155,8 @@ CAFE = pygame.Rect(1540, 700, 440, 300)
 MARKET = pygame.Rect(1010, 990, 360, 190)
 SMOOTHIE_CART = pygame.Rect(1530, 1120, 430, 170)
 POND = pygame.Rect(1040, 245, 390, 270)
-BEEHIVE = pygame.Rect(245, 1000, 135, 105)
-ICE_MAKER = pygame.Rect(455, 1000, 155, 105)
+BEEHIVE = pygame.Rect(125, 1000, 135, 105)
+ICE_MAKER = pygame.Rect(420, 1000, 155, 105)
 COW_BARN = pygame.Rect(680, 945, 250, 160)
 FACILITY_RECTS = {
     "beehive": BEEHIVE,

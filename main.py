@@ -172,7 +172,7 @@ PATH_RECTS = (
     pygame.Rect(300, 925, 610, 70),
 )
 
-# These five sites match the player's standing positions in the supplied
+# These seven sites match the player's standing positions in the supplied
 # reference screenshots. No other streetlight sites are active.
 STREETLIGHT_POSITIONS: tuple[tuple[int, int], ...] = (
     (1550, 630),
@@ -180,6 +180,8 @@ STREETLIGHT_POSITIONS: tuple[tuple[int, int], ...] = (
     (1280, 185),
     (-10, 570),
     (-10, 970),
+    (704, 249),
+    (540, 1360),
 )
 STREETLIGHT_SITE_LABELS: tuple[str, ...] = ("가로등",) * STREETLIGHT_COUNT
 
@@ -4160,7 +4162,7 @@ class GameApp:
             ("낚시", "상점 낚싯대 → 연못 E", "찌를 던질 때 내구도 1이 줄고 40번째 사용 뒤 부서져요."),
             ("집·가구", "농장집 문 앞 E", "집에 들어가 침대·서랍·책상·랜턴·화분을 구입해 꾸며요."),
             ("제조·판매", "블렌더 E → +/- · 5/6", "주문 재료를 맞추면 3초 동안 소리와 함께 직접 갈아요."),
-            ("낮·밤·가로등", "하루 24분 · 부지 E", "지정된 5곳의 가로등은 저녁부터 새벽까지 자동으로 켜져요."),
+            ("낮·밤·가로등", "하루 24분 · 부지 E", "지정된 7곳의 가로등은 저녁부터 새벽까지 자동으로 켜져요."),
         ]
         y = 176
         for title, control, body in rows:

@@ -393,7 +393,7 @@ class HarvestEventTests(unittest.TestCase):
             main.STREETLIGHT_POSITIONS,
             (
                 (1550, 630), (1525, 50), (1280, 185),
-                (-10, 570), (-10, 970),
+                (-10, 570), (-10, 970), (704, 249), (540, 1360),
             ),
         )
         self.app.state.streetlights_installed = [False] * main.STREETLIGHT_COUNT

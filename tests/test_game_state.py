@@ -463,6 +463,27 @@ class GameStateTests(unittest.TestCase):
                         [False] * STREETLIGHT_COUNT,
                     )
 
+    def test_current_lamp_saves_add_new_sites_without_losing_progress(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "save.json"
+            state = GameState.new(now=100.0)
+            data = state.to_dict()
+            for existing_lamps in (
+                [False, True, True, True, False],
+                [False, True, True, True, False, True],
+            ):
+                with self.subTest(existing_lamps=existing_lamps):
+                    data["streetlights_installed"] = existing_lamps
+                    path.write_text(json.dumps(data), encoding="utf-8")
+
+                    loaded = GameState.load(path, now=101.0)
+
+                    self.assertEqual(
+                        loaded.streetlights_installed,
+                        existing_lamps
+                        + [False] * (STREETLIGHT_COUNT - len(existing_lamps)),
+                    )
+
     def test_tree_drop_probabilities_and_daily_shake_limit(self):
         self.assertEqual(
             TREE_DROP_TABLE,

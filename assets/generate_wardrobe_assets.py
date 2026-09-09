@@ -7,7 +7,7 @@ os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
 import pygame
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from dressup import build_frames, character_surface
+from dressup import build_frames, character_surface, product_surface
 from wardrobe_catalog import DEFAULT_LOOK, OUTFITS, OPTIONS, CATEGORIES, THEME_SETS, cosmetic_price, option_label
 
 
@@ -30,7 +30,7 @@ def export():
             look = {**DEFAULT_LOOK, category: key}
             if category == "outfit":
                 look.update(THEME_SETS.get(key, {}))
-            sprite = character_surface(look, scale=4)
+            sprite = product_surface(category, key, scale=4)
             center = (120 + (i % 4) * 240, 165 + (i // 4) * 220)
             sheet.blit(sprite, sprite.get_rect(center=center))
             label = font.render(option_label(category, key), True, (68, 44, 78))

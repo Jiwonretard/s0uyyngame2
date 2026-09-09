@@ -17,7 +17,7 @@
 
 ## 디자인 파일
 
-- `catalogue_outfit.png`: 12종 의상 전체 보기
+- `catalogue_outfit.png`: 캐릭터 없이 12종 의상 상품만 전체 보기
 - `catalogue_headband.png`, `catalogue_shoes.png`, `catalogue_hair.png`, `catalogue_socks.png`: 부위별 보기
 - `outfit_*.png`: 투명 배경 4방향 × 3프레임 시트 (한 프레임 96×120)
 - 행 순서: 정면, 왼쪽, 오른쪽, 뒤 / 열 순서: 기본, 걷기 1, 걷기 2
@@ -25,6 +25,8 @@
 
 기존 게임의 픽셀 외곽선, 긴 머리와 웃는 얼굴을 바탕으로 코드로 디자인했습니다.
 게임은 `dressup.py`에서 부위를 합성하고 옷을 바꿀 때만 걷기 프레임을 생성합니다.
+게임 옷장 오른쪽 상품 카드와 `catalogue_*.png`에는 캐릭터 없이 해당 제품만 표시됩니다.
+왼쪽 거울과 `outfit_*.png`에는 착용한 캐릭터의 전체 모습이 표시됩니다.
 이 폴더의 PNG는 같은 렌더러로 만든 디자인 확인·재사용용 출력물입니다.
 PNG를 직접 편집하면 게임에 자동 반영되지는 않으며 렌더러를 수정해야 합니다.
 `python3 assets/generate_wardrobe_assets.py`로 전체 PNG를 재생성할 수 있습니다.

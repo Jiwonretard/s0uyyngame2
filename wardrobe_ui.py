@@ -1,6 +1,6 @@
 """Wardrobe screen and controls, shared with the game's live character renderer."""
 import pygame
-from dressup import character_surface
+from dressup import product_surface
 from wardrobe_catalog import CATEGORIES, OPTIONS, DEFAULT_LOOK, option_label, cosmetic_price, theme_price
 
 INK = (55, 39, 69)
@@ -118,12 +118,13 @@ class WardrobeUI:
             owned = self.state.owns_cosmetic(self.wardrobe_category, key)
             pygame.draw.rect(self.screen, (223, 236, 201) if selected else (250, 229, 192), rect, border_radius=8)
             pygame.draw.rect(self.screen, PURPLE if selected else (185, 150, 109), rect, 3 if selected else 1, border_radius=8)
-            preview = {**look, self.wardrobe_category: key}
-            cache_key = tuple(sorted(preview.items()))
+            cache_key = (self.wardrobe_category, key)
             if cache_key not in self.wardrobe_thumbnails:
                 if len(self.wardrobe_thumbnails) >= 128:
                     self.wardrobe_thumbnails.clear()
-                self.wardrobe_thumbnails[cache_key] = character_surface(preview, scale=2)
+                self.wardrobe_thumbnails[cache_key] = product_surface(
+                    self.wardrobe_category, key, scale=2
+                )
             thumbnail = self.wardrobe_thumbnails[cache_key]
             self.screen.blit(thumbnail, thumbnail.get_rect(center=(rect.centerx, rect.y + 46)))
             self.text(option_label(self.wardrobe_category, key), 14, INK, rect.centerx, rect.y + 91, center=True)

@@ -10,7 +10,7 @@ os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import pygame
 from game_state import GameState
-from dressup import build_frames, character_surface
+from dressup import SKIN, build_frames, character_surface, product_surface
 from wardrobe_catalog import (
     COSMETIC_PRICES,
     DEFAULT_LOOK,
@@ -152,3 +152,14 @@ class WardrobeTests(unittest.TestCase):
                 if key != DEFAULT_LOOK[category]:
                     alternate = character_surface({category: key})
                     self.assertTrue(base != pygame.image.tostring(alternate, "RGBA"), (category, key))
+
+    def test_store_cards_show_products_without_character_bodies(self):
+        for category, options in OPTIONS.items():
+            products = []
+            for key in options:
+                icon = product_surface(category, key)
+                self.assertEqual(icon.get_size(), (96, 80))
+                self.assertGreater(icon.get_bounding_rect().width, 0)
+                self.assertNotIn(SKIN, {icon.get_at((x, y))[:3] for x in range(icon.get_width()) for y in range(icon.get_height())})
+                products.append(pygame.image.tostring(icon, "RGBA"))
+            self.assertEqual(len(products), len(set(products)), category)

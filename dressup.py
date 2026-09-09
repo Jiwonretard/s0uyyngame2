@@ -3,6 +3,7 @@
 Compose only when a look changes, then reuse its walking frames during play.
 The original photo-derived character remains available through reset.
 """
+import math
 import pygame
 from wardrobe_catalog import DEFAULT_LOOK, HEADBANDS, OUTFITS, SHOES, HAIR_COLORS, SOCKS
 
@@ -11,19 +12,21 @@ SKIN = (255, 218, 182)
 WHITE = (255, 248, 231)
 
 
-def character_surface(appearance, direction="down", step=0, scale=3):
+def character_surface(appearance, direction="down", step=0, scale=3, *, phase=None):
     look = {**DEFAULT_LOOK, **appearance}
     _, cloth, trim, style = OUTFITS[look["outfit"]]
     hair = HAIR_COLORS[look["hair"]][1]
     shoe = SHOES[look["shoes"]][1]
     sock = SOCKS[look["socks"]][1]
-    c = pygame.Surface((32, 40), pygame.SRCALPHA)
+    # Draw at the game's native scale so sub-pixel design coordinates create
+    # intermediate foot positions, rather than jumping whole 3px blocks.
+    c = pygame.Surface((96, 120), pygame.SRCALPHA)
 
     def rect(color, x, y, w, h):
-        pygame.draw.rect(c, color, (x, y, w, h))
+        pygame.draw.rect(c, color, (round(x * 3), round(y * 3), round(w * 3), round(h * 3)))
 
     def poly(color, points):
-        pygame.draw.polygon(c, color, points)
+        pygame.draw.polygon(c, color, [(round(x * 3), round(y * 3)) for x, y in points])
 
     def framed(color, x, y, w, h):
         rect(INK, x, y, w, h)
@@ -35,13 +38,16 @@ def character_surface(appearance, direction="down", step=0, scale=3):
 
     side = direction in ("left", "right")
     back = direction == "up"
-    swing = (0, -2, 2)[step]
+    swing = (0, -2, 2)[step] if phase is None else math.sin(phase) * 2
     # Back hair is beneath the body; front hair is applied again for rear views.
     poly(INK, [(7, 6), (11, 4), (22, 4), (26, 9), (26, 29), (22, 32), (6, 30), (6, 10)])
     rect(hair, 7, 9, 18, 21)
     # Both legs and footwear are part of every animation frame.
     for i, x in enumerate((12, 19) if not side else (13 - swing, 18 + swing)):
-        lift = (swing if i == 0 else -swing) if not side else (-1 if i == (step % 2) and step else 0)
+        lift = (swing if i == 0 else -swing) if not side else (
+            (-1 if i == (step % 2) and step else 0) if phase is None
+            else -max(0, math.sin(phase + i * math.pi)) * 1.25
+        )
         leg_y = 30 + lift
         rect(SKIN, x, leg_y, 4, 7)
         if sock:
@@ -112,7 +118,7 @@ def character_surface(appearance, direction="down", step=0, scale=3):
             rect(trim, x + 1, y - 1, 2, 1)
     # Sleeves and hands swing independently in side views.
     for x in ((9,) if side else (8, 23)):
-        arm_y = 23 + (swing // 2 if side else 0)
+        arm_y = 23 + (swing * 0.45 if side else (swing * 0.2 if x == 8 else -swing * 0.2))
         rect(INK, x - 1, arm_y, 5, 9)
         rect(trim, x, arm_y, 3, 6)
         rect(SKIN, x, arm_y + 6, 3, 2)
@@ -130,12 +136,17 @@ def character_surface(appearance, direction="down", step=0, scale=3):
         if side:
             rect(hair, 21, 11, 4, 18)
             rect(INK, 10, 13, 3, 2)
+            rect(WHITE, 10.3, 13, 0.7, 0.7)
             rect((205, 83, 110), 8, 17, 4, 3)
             rect((248, 144, 167), 16, 16, 2, 2)
         else:
             for x in (11, 20):
                 rect(INK, x, 13, 3, 2)
+                rect(WHITE, x + 0.3, 13, 0.7, 0.7)
             rect((205, 83, 110), 13, 17, 7, 3)
+            rect(SKIN, 13, 19.4, 0.6, 0.6)
+            rect(SKIN, 19.4, 19.4, 0.6, 0.6)
+            rect((235, 124, 145), 14, 19, 5, 0.7)
             for x in (9, 23):
                 rect((248, 144, 167), x, 16, 2, 2)
     # Accessories sit above the same hairline in all poses.
@@ -178,6 +189,48 @@ def character_surface(appearance, direction="down", step=0, scale=3):
 def build_frames(appearance):
     return {direction: [character_surface(appearance, direction, step) for step in range(3)]
             for direction in ("down", "left", "right", "up")}
+
+
+WALK_FRAME_COUNT = 12
+CHARACTER_SCALE = 0.9
+
+
+def smaller_frames(frames):
+    return {direction: [pygame.transform.scale(frame, (
+        round(frame.get_width() * CHARACTER_SCALE), round(frame.get_height() * CHARACTER_SCALE)
+    )) for frame in poses] for direction, poses in frames.items()}
+
+
+def build_walk_frames(appearance):
+    return smaller_frames({direction: [character_surface(appearance, direction,
+        phase=i * math.tau / WALK_FRAME_COUNT) for i in range(WALK_FRAME_COUNT)]
+        for direction in ("down", "left", "right", "up")})
+
+
+def original_walk_frames(frames):
+    """Animate the original doll's own lower legs, preserving its existing art."""
+    result = {}
+    for direction, poses in frames.items():
+        idle = poses[0]
+        width, height = idle.get_size()
+        cut = height - round(height * 0.16)
+        half = width // 2
+        legs = [idle.subsurface((i * half, cut, half if i == 0 else width - half, height - cut)).copy()
+                for i in range(2)]
+        result[direction] = []
+        for index in range(WALK_FRAME_COUNT):
+            phase = index * math.tau / WALK_FRAME_COUNT
+            frame = idle.copy()
+            frame.fill((0, 0, 0, 0), (0, cut, width, height - cut))
+            for i, leg in enumerate(legs):
+                stride = math.sin(phase + i * math.pi)
+                dx = round(stride * 3) if direction in ("left", "right") else 0
+                lift = round(max(0, stride) * 3)
+                # Compress from the top joint instead of disconnecting the leg.
+                lifted = pygame.transform.scale(leg, (leg.get_width(), leg.get_height() - lift))
+                frame.blit(lifted, (i * half + dx, cut))
+            result[direction].append(frame)
+    return result
 
 
 def product_surface(category, key, scale=2):

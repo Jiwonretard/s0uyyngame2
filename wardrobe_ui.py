@@ -105,8 +105,8 @@ class WardrobeUI:
         mirror = pygame.Rect(80, 167, 280, 260)
         pygame.draw.rect(self.screen, (205, 170, 123), mirror.inflate(10, 10), border_radius=20)
         pygame.draw.rect(self.screen, (219, 237, 231), mirror, border_radius=15)
-        phase = (0, 1, 0, 2)[int(self.frame_time * 5) % 4]
-        frames = self.player_frames[self.wardrobe_direction]
+        frames = self.player_walk_frames[self.wardrobe_direction]
+        phase = int(self.frame_time * 18) % len(frames)
         sprite = frames[phase]
         sprite = pygame.transform.scale(sprite, (sprite.get_width() * 2, sprite.get_height() * 2))
         self.screen.blit(sprite, sprite.get_rect(midbottom=(220, 420)))

@@ -20,6 +20,7 @@
 - `catalogue_outfit.png`: 캐릭터 없이 12종 의상 상품만 전체 보기
 - `catalogue_headband.png`, `catalogue_shoes.png`, `catalogue_hair.png`, `catalogue_socks.png`: 부위별 보기
 - `outfit_*.png`: 투명 배경 4방향 × 3프레임 시트 (한 프레임 96×120)
+- `walk_*.png`: 게임 크기에 맞춘 4방향 × 12프레임 걷기 시트 (한 프레임 86×108)
 - 행 순서: 정면, 왼쪽, 오른쪽, 뒤 / 열 순서: 기본, 걷기 1, 걷기 2
 - 옷장 가구 디자인: `../furniture/wardrobe.png`
 

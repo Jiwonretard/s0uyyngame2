@@ -13,7 +13,7 @@ import random
 import time
 from typing import Callable
 
-from furniture_catalog import FURNITURE_COSTS, FURNITURE_LABELS, FURNITURE_FOOTPRINTS
+from furniture_catalog import FURNITURE_COSTS, FURNITURE_LABELS, FURNITURE_FOOTPRINTS, FURNITURE_CATEGORIES
 from wardrobe_catalog import (
     DEFAULT_LOOK,
     DEFAULT_OWNED_COSMETICS,
@@ -43,6 +43,9 @@ BAG_STACK_SIZE = 16
 BAG_COLUMNS = 4
 BAG_ROWS = 4
 BAG_SLOT_COUNT = BAG_COLUMNS * BAG_ROWS
+DRAWER_COLUMNS = 5
+DRAWER_ROWS = 5
+DRAWER_SLOT_COUNT = DRAWER_COLUMNS * DRAWER_ROWS
 BAG_ITEM_KEYS = (
     "blueberries",
     "organic_blueberries",
@@ -482,6 +485,8 @@ class GameState:
     fish_caught: int = 0
     furniture_owned: list[str] = field(default_factory=list)
     furniture_layout: dict[str, list[int]] = field(default_factory=dict)
+    drawer_contents: dict[str, dict[str, int]] = field(default_factory=dict)
+    drawer_rod_durability: dict[str, int] = field(default_factory=dict)
     appearance: dict[str, str] = field(default_factory=dict)
     owned_cosmetics: list[str] = field(default_factory=lambda: list(DEFAULT_OWNED_COSMETICS))
     tree_shaken_days: dict[str, int] = field(default_factory=dict)
@@ -778,6 +783,78 @@ class GameState:
         future_stacks = (current + amount + BAG_STACK_SIZE - 1) // BAG_STACK_SIZE
         return self.bag_slots_used + future_stacks - current_stacks <= BAG_SLOT_COUNT
 
+    def drawer_available(self, drawer: str) -> bool:
+        return (drawer in FURNITURE_CATEGORIES["drawer"]
+                and drawer in self.furniture_owned and drawer in self.furniture_layout)
+
+    def drawer_stacks(self, drawer: str) -> list[tuple[str, int]]:
+        stacks = []
+        contents = self.drawer_contents.get(drawer, {})
+        for key in BAG_ITEM_KEYS:
+            remaining = contents.get(key, 0)
+            while remaining > 0:
+                amount = min(BAG_STACK_SIZE, remaining)
+                stacks.append((key, amount))
+                remaining -= amount
+        return stacks
+
+    def transfer_drawer(self, drawer: str, key: str, amount: int, *, deposit: bool) -> tuple[bool, str]:
+        """Move a stack atomically; the fishing rod retains its durability."""
+        if not self.drawer_available(drawer):
+            return False, "집에 배치한 서랍을 열어 주세요."
+        if key not in BAG_ITEM_KEYS or not isinstance(amount, int) or amount <= 0:
+            return False, "옮길 수 없는 물건이에요."
+        contents = self.drawer_contents.get(drawer, {})
+        stored = contents.get(key, 0)
+        available = self.inventory(key) if deposit else stored
+        if amount > available:
+            return False, "옮길 물건이 부족해요."
+        if key == "fishing_rod":
+            if amount != 1 or (stored if deposit else self.fishing_rod):
+                return False, "낚싯대는 한 개씩 보관하고 꺼낼 수 있어요."
+        if deposit:
+            before = (stored + BAG_STACK_SIZE - 1) // BAG_STACK_SIZE
+            after = (stored + amount + BAG_STACK_SIZE - 1) // BAG_STACK_SIZE
+            if len(self.drawer_stacks(drawer)) + after - before > DRAWER_SLOT_COUNT:
+                return False, "서랍 25칸이 가득 찼어요."
+        elif not self.can_add_to_bag(key, amount):
+            return False, "가방에 공간이 부족해요."
+        contents = self.drawer_contents.setdefault(drawer, {})
+        if deposit:
+            contents[key] = stored + amount
+            setattr(self, key, self.inventory(key) - amount)
+            if key == "fishing_rod":
+                self.drawer_rod_durability[drawer] = self.fishing_rod_durability
+                self.fishing_rod_durability = 0
+        else:
+            contents[key] = stored - amount
+            if not contents[key]:
+                del contents[key]
+            setattr(self, key, self.inventory(key) + amount)
+            if key == "fishing_rod":
+                self.fishing_rod_durability = self.drawer_rod_durability.pop(drawer, FISHING_ROD_MAX_DURABILITY)
+        action = "넣었어요" if deposit else "꺼냈어요"
+        return True, f"{BAG_ITEM_LABELS[key]} {amount}개를 {action}."
+
+    def normalize_drawers(self) -> None:
+        raw = self.drawer_contents if isinstance(self.drawer_contents, dict) else {}
+        rods = self.drawer_rod_durability if isinstance(self.drawer_rod_durability, dict) else {}
+        clean, clean_rods = {}, {}
+        for drawer in FURNITURE_CATEGORIES["drawer"]:
+            contents = raw.get(drawer)
+            if not isinstance(contents, dict):
+                continue
+            clean[drawer] = {}
+            for key in BAG_ITEM_KEYS:
+                value = contents.get(key)
+                if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+                    clean[drawer][key] = min(value, 1 if key == "fishing_rod" else DRAWER_SLOT_COUNT * BAG_STACK_SIZE)
+            if clean[drawer].get("fishing_rod"):
+                durability = rods.get(drawer, FISHING_ROD_MAX_DURABILITY)
+                clean_rods[drawer] = max(1, min(FISHING_ROD_MAX_DURABILITY,
+                    durability if isinstance(durability, int) else FISHING_ROD_MAX_DURABILITY))
+        self.drawer_contents, self.drawer_rod_durability = clean, clean_rods
+
     def tree_shaken_today(self, tree_index: int, day: int | None = None) -> bool:
         selected_day = self.current_day if day is None else max(1, int(day))
         return int(self.tree_shaken_days.get(str(tree_index), 0)) == selected_day
@@ -1051,6 +1128,8 @@ class GameState:
         return True, f"{ITEM_LABELS[key]} 1개를 샀어요."
 
     def buy_fishing_rod(self) -> tuple[bool, str]:
+        if any(contents.get("fishing_rod", 0) for contents in self.drawer_contents.values()):
+            return False, "서랍에 보관한 낚싯대가 있어요. 집에서 꺼내 주세요."
         if self.fishing_rod:
             return False, "이미 낚싯대를 가지고 있어요."
         if self.money < FISHING_ROD_COST:
@@ -1482,6 +1561,7 @@ class GameState:
             for fish_key in FISH_PRICES:
                 setattr(state, fish_key, max(0, int(getattr(state, fish_key))))
             state.fish_caught = max(0, int(state.fish_caught))
+            state.normalize_drawers()
             state.appearance = normalized_appearance(state.appearance)
             state.owned_cosmetics = normalized_owned_cosmetics(
                 state.owned_cosmetics,

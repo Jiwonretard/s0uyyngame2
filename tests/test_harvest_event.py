@@ -887,9 +887,33 @@ class HarvestEventTests(unittest.TestCase):
         for direction in ("left", "right", "up"):
             self.app.direction = direction
             self.app.walk_phase = 1.2
-            with patch.object(self.app, "draw_walking_feet", wraps=self.app.draw_walking_feet) as feet:
-                self.app.draw_character()
-            feet.assert_called_once()
+            frames = self.app.player_walk_frames[direction]
+            self.assertEqual(len(frames), 12)
+            leg_regions = [pygame.image.tostring(frame.subsurface(
+                (0, frame.get_height() - 20, frame.get_width(), 20)), "RGBA") for frame in frames]
+            self.assertGreater(len(set(leg_regions)), 3)
+            self.assertLessEqual(frames[0].get_height(), 101)
+            self.app.draw_character()
+
+    def test_drawer_ui_moves_stacks_saves_and_returns_home(self):
+        from storage_ui import slot_rect, RETURN_RECT
+        self.app.state.money = 500
+        self.app.state.buy_furniture("drawer")
+        self.app.state.place_furniture("drawer", 0, 0)
+        self.app.state.blueberries = 20
+        self.app.overlay = "home"
+        self.app.handle_click(main.HOME_DRAWER_BUTTON.center)
+        self.assertEqual(self.app.overlay, "storage")
+        self.app.handle_click(slot_rect(0, True).center)
+        self.assertEqual(self.app.state.blueberries, 4)
+        self.assertEqual(self.app.state.drawer_stacks("drawer"), [("blueberries", 16)])
+        self.app.draw()
+        self.assertEqual(GameState.load(main.SAVE_PATH).drawer_contents, self.app.state.drawer_contents)
+        with patch("pygame.key.get_mods", return_value=pygame.KMOD_SHIFT):
+            self.app.handle_click(slot_rect(0, False).center)
+        self.assertEqual(self.app.state.blueberries, 5)
+        self.app.handle_click(RETURN_RECT.center)
+        self.assertEqual(self.app.overlay, "home")
 
     def test_facility_can_be_built_and_collected_from_world_interaction(self):
         self.app.state.money = 10_000

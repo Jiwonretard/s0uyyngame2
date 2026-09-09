@@ -15,7 +15,8 @@ import time
 
 import pygame
 from wardrobe_ui import WardrobeUI
-from dressup import build_frames
+from dressup import build_frames, build_walk_frames, smaller_frames, original_walk_frames, WALK_FRAME_COUNT
+from storage_ui import StorageUI
 
 from furniture_catalog import FURNITURE_CATALOG, FURNITURE_CATEGORIES, FURNITURE_CATEGORY_LABELS
 
@@ -269,6 +270,7 @@ HOME_GRID_CELL = HOME_BUILD_AREA.width // FURNITURE_GRID_COLUMNS
 HOME_EDIT_BUTTON = pygame.Rect(865, 96, 160, 42)
 HOME_EXIT_BUTTON = pygame.Rect(1040, 96, 160, 42)
 HOME_WARDROBE_BUTTON = pygame.Rect(660, 96, 190, 42)
+HOME_DRAWER_BUTTON = pygame.Rect(450, 109, 195, 29)
 HOME_ROTATE_BUTTON = pygame.Rect(845, 490, 110, 42)
 HOME_STORE_BUTTON = pygame.Rect(965, 490, 110, 42)
 HOME_DONE_BUTTON = pygame.Rect(1085, 490, 110, 42)
@@ -502,7 +504,7 @@ class TreeDrop:
         self.y += 24 * dt
 
 
-class GameApp(WardrobeUI):
+class GameApp(WardrobeUI, StorageUI):
     def __init__(self) -> None:
         pygame.mixer.pre_init(44100, -16, 2, 512)
         pygame.init()
@@ -599,7 +601,7 @@ class GameApp(WardrobeUI):
         self.player_frames: dict[str, list[pygame.Surface]] = {}
         self.player_sprite_error = ""
         self._load_player_frames()
-        self.original_player_frames = self.player_frames
+        self.original_player_frames = smaller_frames(self.player_frames)
         self.refresh_appearance()
         self._ground_textures = self._make_ground_textures()
         # Reuse full-screen alpha surfaces instead of allocating them every
@@ -1052,9 +1054,15 @@ class GameApp(WardrobeUI):
 
     def refresh_appearance(self) -> None:
         self.player_frames = (
-            build_frames(self.state.appearance)
+            smaller_frames(build_frames(self.state.appearance))
             if self.state.appearance or not self.original_player_frames
             else self.original_player_frames
+        )
+
+        self.player_walk_frames = (
+            build_walk_frames(self.state.appearance)
+            if self.state.appearance or not self.original_player_frames
+            else original_walk_frames(self.original_player_frames)
         )
 
     def _camera_target(self) -> pygame.Vector2:
@@ -1206,7 +1214,11 @@ class GameApp(WardrobeUI):
         new_y = self.player.y + movement.y
         if not self._collides(self.player.x, new_y):
             self.player.y = new_y
-        self.walk_phase += dt * 11.0
+        # One cycle per ~100 world pixels; a blocked character does not walk.
+        distance = math.hypot(self.player.x - (new_x - movement.x),
+                              self.player.y - (new_y - movement.y))
+        self.is_moving = distance > 0.001
+        self.walk_phase = (self.walk_phase + distance / 25.0) % 4.0
 
     def update(self, dt: float) -> None:
         now = time.time()
@@ -1909,6 +1921,9 @@ class GameApp(WardrobeUI):
         )
 
     def handle_key(self, event: pygame.event.Event) -> None:
+        if self.overlay == "storage":
+            self.handle_storage_key(event)
+            return
         if self.overlay == "wardrobe":
             self.handle_wardrobe_key(event)
             return
@@ -2007,6 +2022,9 @@ class GameApp(WardrobeUI):
                 self.overlay = "shop"
             return
         if self.overlay == "home":
+            if event.key == pygame.K_v or getattr(event, "scancode", None) == pygame.KSCAN_V:
+                self.open_drawer()
+                return
             if event.key == pygame.K_c or getattr(event, "scancode", None) == pygame.KSCAN_C:
                 self.open_wardrobe()
                 return
@@ -2113,6 +2131,9 @@ class GameApp(WardrobeUI):
             self.interact()
 
     def handle_click(self, position: tuple[int, int]) -> None:
+        if self.overlay == "storage":
+            self.handle_storage_click(position)
+            return
         if self.overlay == "wardrobe":
             self.handle_wardrobe_click(position)
             return
@@ -2173,6 +2194,15 @@ class GameApp(WardrobeUI):
                 self.overlay = "shop"
             return
         if self.overlay == "home":
+            if HOME_DRAWER_BUTTON.collidepoint(position):
+                self.open_drawer()
+                return
+            if not self.home_edit_mode:
+                for key in FURNITURE_CATEGORIES["drawer"]:
+                    placement = self.state.furniture_layout.get(key)
+                    if placement and self.furniture_grid_rect(key, *placement).collidepoint(position):
+                        self.open_drawer(key)
+                        return
             if HOME_WARDROBE_BUTTON.collidepoint(position):
                 self.open_wardrobe()
                 return
@@ -2879,18 +2909,15 @@ class GameApp(WardrobeUI):
     def draw_character(self) -> None:
         x, y = self.world_to_screen((self.player.x, self.player.y))
         if self.player_frames:
-            pygame.draw.rect(self.screen, (55, 98, 47), (x - 24, y - 7, 48, 10))
-            frame_index = 0
-            step_index = 0
+            pygame.draw.ellipse(self.screen, (55, 98, 47), (x - 22, y - 7, 44, 9))
             bob = 0
+            frame = self.player_frames[self.direction][0]
             if self.is_moving:
-                step_index = int(self.walk_phase) % 4
-                frame_index = (0, 1, 0, 2)[step_index]
-                bob = -2 if step_index in (1, 3) else 0
-            frame = self.player_frames[self.direction][frame_index]
+                phase = self.walk_phase / 4.0
+                frame_index = int(phase * WALK_FRAME_COUNT) % WALK_FRAME_COUNT
+                bob = -round(abs(math.sin(phase * math.tau)) * 1.3)
+                frame = self.player_walk_frames[self.direction][frame_index]
             self.screen.blit(frame, frame.get_rect(midbottom=(x, y + 2 + bob)))
-            if self.is_moving and not self.state.appearance and self.direction in ("left", "right", "up"):
-                self.draw_walking_feet(x, y, step_index)
             if self.action_timer > 0:
                 self.draw_harvest_basket(x, y)
             return
@@ -3576,6 +3603,9 @@ class GameApp(WardrobeUI):
             else f"가구를 구입한 뒤 G로 꾸미기 · 보유 {self.state.money:,}코인"
         )
         self.text(subtitle, 14, MUTED, 80, 91)
+        rounded_rect(self.screen, HOME_DRAWER_BUTTON, BLUEBERRY, 7, WOOD_DARK, 2)
+        self.text("서랍 보관함 V", 14, WHITE,
+                  HOME_DRAWER_BUTTON.centerx, HOME_DRAWER_BUTTON.centery, center=True)
         rounded_rect(self.screen, HOME_WARDROBE_BUTTON, BLUEBERRY, 9, WOOD_DARK, 3)
         self.text("옷장 열기 C", 15, WHITE,
                   HOME_WARDROBE_BUTTON.centerx, HOME_WARDROBE_BUTTON.centery, center=True)
@@ -4311,6 +4341,8 @@ class GameApp(WardrobeUI):
             self.draw_home_overlay()
         elif self.overlay == "wardrobe":
             self.draw_wardrobe_overlay()
+        elif self.overlay == "storage":
+            self.draw_storage_overlay()
         elif self.overlay == "blender":
             self.draw_blender_overlay()
         elif self.overlay == "blending":

@@ -198,12 +198,33 @@ class GameStateTests(unittest.TestCase):
 
             legacy = state.to_dict()
             legacy["save_version"] = 4
+            legacy["furniture_owned"] = ["bed", "drawer", "desk", "lantern", "flowerpot"]
             legacy.pop("furniture_layout")
             path.write_text(json.dumps(legacy), encoding="utf-8")
             migrated = GameState.load(path)
 
-        self.assertEqual(migrated.furniture_owned, list(FURNITURE_COSTS))
-        self.assertEqual(set(migrated.furniture_layout), set(FURNITURE_COSTS))
+        self.assertEqual(migrated.furniture_owned, legacy["furniture_owned"])
+        self.assertEqual(set(migrated.furniture_layout), set(legacy["furniture_owned"]))
+
+    def test_all_furniture_designs_purchase_place_rotate_and_save(self):
+        state = GameState.new(now=100.0)
+        state.money = sum(FURNITURE_COSTS.values())
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "furniture.json"
+            for key, price in FURNITURE_COSTS.items():
+                with self.subTest(key=key):
+                    before = state.money
+                    self.assertTrue(state.buy_furniture(key)[0])
+                    self.assertEqual(state.money, before - price)
+                    self.assertFalse(state.buy_furniture(key)[0])
+                    self.assertEqual(state.money, before - price)
+                    self.assertTrue(state.place_furniture(key, 2, 2)[0])
+                    self.assertTrue(state.place_furniture(key, 2, 2, 1)[0])
+                    state.save(path)
+                    loaded = GameState.load(path, now=100.0)
+                    self.assertEqual(loaded.furniture_layout[key], [2, 2, 1])
+                    self.assertTrue(state.store_furniture(key)[0])
+        self.assertEqual(state.money, 0)
 
     def test_fishing_rod_breaks_exactly_on_the_fortieth_cast(self):
         state = GameState.new(now=100.0)
@@ -561,28 +582,30 @@ class GameStateTests(unittest.TestCase):
         for key, amount in order.recipe.items():
             setattr(state, key, amount)
         state.premium_honey = 1
+        state.premium_ice = 1
         state.low_fat_milk = 1
         base_price = state.smoothie_sale_price(order)
 
         ok, _ = state.make_smoothie(
             order.recipe,
-            {"premium_honey": True, "low_fat_milk": True},
+            {"premium_honey": True, "low_fat_milk": True, "premium_ice": True},
         )
 
         self.assertTrue(ok)
         self.assertEqual(state.premium_honey, 0)
+        self.assertEqual(state.premium_ice, 0)
         self.assertEqual(state.low_fat_milk, 0)
-        self.assertEqual(state.prepared_bonus, SPECIAL_SMOOTHIE_BONUS * 2)
+        self.assertEqual(state.prepared_bonus, SPECIAL_SMOOTHIE_BONUS * 3)
         self.assertEqual(
             state.smoothie_sale_price(order),
-            base_price + SPECIAL_SMOOTHIE_BONUS * 2,
+            base_price + SPECIAL_SMOOTHIE_BONUS * 3,
         )
         starting_money = state.money
         ok, _ = state.sell_smoothie()
         self.assertTrue(ok)
         self.assertEqual(
             state.money,
-            starting_money + base_price + SPECIAL_SMOOTHIE_BONUS * 2,
+            starting_money + base_price + SPECIAL_SMOOTHIE_BONUS * 3,
         )
         self.assertEqual(state.prepared_bonus, 0)
         self.assertEqual(state.prepared_specials, [])
@@ -673,7 +696,7 @@ class GameStateTests(unittest.TestCase):
         self.assertFalse(ok)
         ok, _ = state.collect_facility("beehive", day=2)
         self.assertTrue(ok)
-        self.assertEqual(state.honey, 2)
+        self.assertEqual(state.premium_honey, 2)
         self.assertEqual(state.facility_upgrade_cost("beehive"), 3_500)
 
         ok, _ = state.upgrade_facility("beehive")
@@ -693,6 +716,16 @@ class GameStateTests(unittest.TestCase):
         state.reputation = 25
         ok, _ = state.build_facility("cow_barn", day=2)
         self.assertTrue(ok)
+
+        ok, _ = state.collect_facility("cow_barn", day=3)
+        self.assertTrue(ok)
+        self.assertEqual(state.low_fat_milk, 2)
+
+        ok, _ = state.build_facility("ice_maker", day=3)
+        self.assertTrue(ok)
+        ok, _ = state.collect_facility("ice_maker", day=4)
+        self.assertTrue(ok)
+        self.assertEqual(state.premium_ice, 4)
 
     def test_seasons_weather_harvest_and_festival_prices_change(self):
         self.assertEqual(season_for_day(1), ("봄", 1, 1))
@@ -809,6 +842,7 @@ class GameStateTests(unittest.TestCase):
             ]
             state.golden_blueberries = 2
             state.premium_honey = 3
+            state.premium_ice = 5
             state.low_fat_milk = 4
             state.tree_shaken_days = {"1": 5}
             state.trees_shaken = 7
@@ -831,6 +865,7 @@ class GameStateTests(unittest.TestCase):
             self.assertEqual(loaded.customer_orders, state.customer_orders)
             self.assertEqual(loaded.golden_blueberries, 2)
             self.assertEqual(loaded.premium_honey, 3)
+            self.assertEqual(loaded.premium_ice, 5)
             self.assertEqual(loaded.low_fat_milk, 4)
             self.assertEqual(loaded.tree_shaken_days, {"1": 5})
             self.assertEqual(loaded.trees_shaken, 7)
@@ -913,7 +948,7 @@ class GameStateTests(unittest.TestCase):
                 "daily_money_earned", "daily_money_spent",
                 "pending_daily_report", "festival_wins",
                 "facility_levels", "facility_ready_days",
-                "golden_blueberries", "premium_honey", "low_fat_milk",
+                "golden_blueberries", "premium_honey", "premium_ice", "low_fat_milk",
                 "golden_blueberries_sold", "trees_shaken", "tree_shaken_days",
                 "prepared_bonus", "prepared_specials",
             ):

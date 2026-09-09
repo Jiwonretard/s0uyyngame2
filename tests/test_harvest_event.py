@@ -102,6 +102,13 @@ class HarvestEventTests(unittest.TestCase):
 
         self.assertEqual(widths, sorted(widths, reverse=True))
 
+    def test_blender_walls_match_roof_width(self):
+        self.assertEqual(main.CAFE.centerx, 1760)
+        self.assertEqual(main.CAFE.width, 496)
+        self.assertEqual(main.CAFE_ROOF_OVERHANG, 0)
+        roof_width = main.CAFE.width + main.CAFE_ROOF_OVERHANG * 2
+        self.assertEqual(roof_width, main.CAFE.width)
+
     def test_shop_name_is_shortened_to_shop(self):
         self.app.player.update(main.SHOP.centerx, main.SHOP.bottom + 42)
         target = self.app.nearest_interaction()
@@ -270,6 +277,7 @@ class HarvestEventTests(unittest.TestCase):
         for key, amount in order.recipe.items():
             setattr(self.app.state, key, amount)
         self.app.state.premium_honey = 1
+        self.app.state.premium_ice = 1
         self.app.state.low_fat_milk = 1
         self.app.player.update(main.CAFE.centerx, main.CAFE.bottom + 42)
         interact = pygame.event.Event(
@@ -285,14 +293,15 @@ class HarvestEventTests(unittest.TestCase):
             plus = pygame.Rect(rect.x + 268, rect.y + 57, 40, 40)
             for _ in range(order.recipe[key]):
                 self.app.handle_click(plus.center)
-        for special_key in ("premium_honey", "low_fat_milk"):
+        for special_key in ("premium_honey", "low_fat_milk", "premium_ice"):
             self.app.handle_click(self.app.blender_special_button(special_key).center)
         self.app.draw()
         self.app.handle_click(pygame.Rect(440, 550, 300, 56).center)
 
         self.assertEqual(self.app.overlay, "blending")
-        self.assertEqual(self.app.state.prepared_bonus, 200)
+        self.assertEqual(self.app.state.prepared_bonus, 300)
         self.assertEqual(self.app.state.premium_honey, 0)
+        self.assertEqual(self.app.state.premium_ice, 0)
         self.assertEqual(self.app.state.low_fat_milk, 0)
         self.app.draw()
 
@@ -721,14 +730,14 @@ class HarvestEventTests(unittest.TestCase):
         self.app.player.update(main.HOUSE.centerx, main.HOUSE.bottom + 37)
         self.app.interact()
         self.assertEqual(self.app.overlay, "home")
-        for key_number in range(pygame.K_1, pygame.K_6):
-            self.app.handle_key(pygame.event.Event(
-                pygame.KEYDOWN,
-                key=key_number,
-                scancode=0,
-                mod=0,
-            ))
-        self.assertEqual(self.app.state.furniture_owned, list(main.FURNITURE_COSTS))
+        for category_index in range(len(main.HOME_CATEGORIES)):
+            self.app.handle_click(main.furniture_category_rect(category_index).center)
+            for key_number in range(pygame.K_1, pygame.K_6):
+                self.app.handle_key(pygame.event.Event(
+                    pygame.KEYDOWN, key=key_number, scancode=0, mod=0,
+                ))
+        self.assertEqual(set(self.app.state.furniture_owned), set(main.FURNITURE_COSTS))
+        self.assertEqual(self.app.state.money, 0)
         self.assertEqual(self.app.state.furniture_layout, {})
 
         self.app.handle_key(pygame.event.Event(
@@ -738,6 +747,7 @@ class HarvestEventTests(unittest.TestCase):
             mod=0,
         ))
         self.assertTrue(self.app.home_edit_mode)
+        self.app.handle_click(main.furniture_category_rect(0).center)
         self.app.handle_key(pygame.event.Event(
             pygame.KEYDOWN,
             key=pygame.K_1,
@@ -766,6 +776,28 @@ class HarvestEventTests(unittest.TestCase):
         ))
         self.assertEqual(self.app.state.furniture_layout["bed"], [2, 1, 1])
         self.app.draw()
+
+    def test_new_furniture_tabs_support_click_purchase_and_edit_selection(self):
+        self.app.overlay = "home"
+        self.app.state.money = 10000
+        self.app.handle_key(pygame.event.Event(
+            pygame.KEYDOWN, key=pygame.K_PAGEUP, scancode=0, mod=0,
+        ))
+        self.assertEqual(self.app.home_category, "flowerpot")
+        self.app.handle_click(main.furniture_card_rect(4).center)
+        self.assertIn("plant_lavender", self.app.state.furniture_owned)
+        self.app.handle_click(main.furniture_card_rect(4).center)
+        self.assertTrue(self.app.home_edit_mode)
+        self.assertEqual(self.app.selected_furniture, "plant_lavender")
+        self.app.handle_click((main.HOME_BUILD_AREA.x + 4, main.HOME_BUILD_AREA.y + 4))
+        self.assertEqual(self.app.state.furniture_layout["plant_lavender"], [0, 0, 0])
+        self.app.draw()
+        self.app.handle_key(pygame.event.Event(
+            pygame.KEYDOWN, key=pygame.K_PAGEDOWN, scancode=0, mod=0,
+        ))
+        self.assertEqual(self.app.home_category, "bed")
+        # Browsing other categories must not lose the placed plant.
+        self.assertEqual(self.app.state.furniture_layout["plant_lavender"], [0, 0, 0])
 
     def test_fish_and_furniture_png_catalogues_are_loaded(self):
         self.assertEqual(set(self.app.fish_icons), set(main.FISH_KEYS))
@@ -833,10 +865,10 @@ class HarvestEventTests(unittest.TestCase):
         self.assertEqual(self.app.state.facility_level("beehive"), 1)
 
         self.app.state.game_elapsed_seconds = main.DAY_SECONDS
-        before_honey = self.app.state.honey
+        before_honey = self.app.state.premium_honey
         self.app.handle_key(event)
         self.assertEqual(
-            self.app.state.honey,
+            self.app.state.premium_honey,
             before_honey + self.app.state.facility_yield("beehive"),
         )
         self.app.draw()

@@ -13,6 +13,8 @@ import random
 import time
 from typing import Callable
 
+from furniture_catalog import FURNITURE_COSTS, FURNITURE_LABELS, FURNITURE_FOOTPRINTS
+
 
 SAVE_VERSION = 5
 LEGACY_GAME_DAY_SECONDS = 720.0
@@ -39,6 +41,7 @@ BAG_ITEM_KEYS = (
     "ice",
     "golden_blueberries",
     "premium_honey",
+    "premium_ice",
     "low_fat_milk",
     "fishing_rod",
     "carp",
@@ -65,8 +68,8 @@ STREETLIGHT_LAYOUT_VERSION = 2
 FACILITY_CONFIG = {
     "beehive": {
         "name": "벌통",
-        "product": "honey",
-        "product_name": "꿀",
+        "product": "premium_honey",
+        "product_name": "고급 꿀",
         "cost": 2_000,
         "upgrade_costs": (0, 3_500, 6_000),
         "unlock_rank": 1,
@@ -74,8 +77,8 @@ FACILITY_CONFIG = {
     },
     "ice_maker": {
         "name": "제빙기",
-        "product": "ice",
-        "product_name": "얼음",
+        "product": "premium_ice",
+        "product_name": "고급 얼음",
         "cost": 4_000,
         "upgrade_costs": (0, 7_000, 11_000),
         "unlock_rank": 2,
@@ -83,8 +86,8 @@ FACILITY_CONFIG = {
     },
     "cow_barn": {
         "name": "젖소 축사",
-        "product": "milk",
-        "product_name": "우유",
+        "product": "low_fat_milk",
+        "product_name": "저지방 우유",
         "cost": 7_000,
         "upgrade_costs": (0, 12_000, 18_000),
         "unlock_rank": 3,
@@ -176,6 +179,7 @@ BAG_ITEM_LABELS = {
     "organic_blueberries": "유기농 블루베리",
     "golden_blueberries": "황금 블루베리",
     "premium_honey": "고급 꿀",
+    "premium_ice": "고급 얼음",
     "low_fat_milk": "저지방 우유",
     "fishing_rod": "낚싯대",
     "carp": "잉어",
@@ -202,29 +206,8 @@ FISH_CATCH_TABLE = (
     (0.92, "bass"),
     (1.00, "turtle"),
 )
-FURNITURE_COSTS = {
-    "bed": 3_000,
-    "drawer": 500,
-    "desk": 1_000,
-    "lantern": 300,
-    "flowerpot": 100,
-}
-FURNITURE_LABELS = {
-    "bed": "침대",
-    "drawer": "서랍",
-    "desk": "책상",
-    "lantern": "랜턴",
-    "flowerpot": "화분",
-}
 FURNITURE_GRID_COLUMNS = 35
 FURNITURE_GRID_ROWS = 10
-FURNITURE_FOOTPRINTS = {
-    "bed": (5, 3),
-    "drawer": (2, 2),
-    "desk": (4, 2),
-    "lantern": (2, 2),
-    "flowerpot": (2, 2),
-}
 DEFAULT_FURNITURE_LAYOUT = {
     "bed": [1, 5, 0],
     "drawer": [31, 5, 0],
@@ -446,6 +429,7 @@ class GameState:
     ice: int = 0
     golden_blueberries: int = 0
     premium_honey: int = 0
+    premium_ice: int = 0
     low_fat_milk: int = 0
     fishing_rod: int = 0
     fishing_rod_durability: int = 0
@@ -1217,6 +1201,7 @@ class GameState:
             return False, "재료가 부족해요: " + ", ".join(missing)
         special_labels = {
             "premium_honey": "고급 꿀",
+            "premium_ice": "고급 얼음",
             "low_fat_milk": "저지방 우유",
         }
         chosen_specials = [
@@ -1395,6 +1380,7 @@ class GameState:
             state.organic_blueberries = max(0, int(state.organic_blueberries))
             state.fertilizer = max(0, int(state.fertilizer))
             state.premium_honey = max(0, int(state.premium_honey))
+            state.premium_ice = max(0, int(state.premium_ice))
             state.low_fat_milk = max(0, int(state.low_fat_milk))
             state.fishing_rod = 1 if state.fishing_rod else 0
             if state.fishing_rod:
@@ -1525,7 +1511,7 @@ class GameState:
                 # Version 1 smoothies were generic. Preserve them as legacy
                 # stock that can be served without discarding player progress.
                 state.prepared_order = None
-            allowed_specials = {"premium_honey", "low_fat_milk"}
+            allowed_specials = {"premium_honey", "premium_ice", "low_fat_milk"}
             if not isinstance(state.prepared_specials, list):
                 state.prepared_specials = []
             state.prepared_specials = [

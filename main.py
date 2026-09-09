@@ -15,6 +15,8 @@ import time
 
 import pygame
 
+from furniture_catalog import FURNITURE_CATALOG, FURNITURE_CATEGORIES, FURNITURE_CATEGORY_LABELS
+
 from game_state import (
     BAG_COLUMNS,
     BAG_ITEM_LABELS,
@@ -151,7 +153,11 @@ GROUND_PALETTES = {
 
 HOUSE = pygame.Rect(120, 70, 440, 250)
 SHOP = pygame.Rect(1510, 100, 450, 320)
-CAFE = pygame.Rect(1540, 700, 440, 300)
+DEFAULT_ROOF_OVERHANG = 28
+# Keep the existing blender roof silhouette while widening its walls to the
+# roof's former outer edges. Its interaction center stays at the same point.
+CAFE = pygame.Rect(1512, 700, 496, 300)
+CAFE_ROOF_OVERHANG = 0
 MARKET = pygame.Rect(1010, 990, 360, 190)
 SMOOTHIE_CART = pygame.Rect(1530, 1120, 430, 170)
 POND = pygame.Rect(1040, 245, 390, 270)
@@ -241,6 +247,7 @@ STATIC_OBSTACLES = (
 
 FISH_KEYS = tuple(FISH_PRICES)
 FURNITURE_KEYS = tuple(FURNITURE_COSTS)
+HOME_CATEGORIES = tuple(FURNITURE_CATEGORIES)
 MARKET_PRODUCT_KEYS = ("blueberries", "golden_blueberries", "organic_blueberries")
 MARKET_SALE_AMOUNTS = (1, 10, None)
 SHOP_CLOSE_RECT = pygame.Rect(765, 578, 190, 48)
@@ -267,6 +274,10 @@ _INTERACTION_UNSET = object()
 
 def furniture_card_rect(index: int) -> pygame.Rect:
     return pygame.Rect(115 + index * 210, 548, 190, 112)
+
+
+def furniture_category_rect(index: int) -> pygame.Rect:
+    return pygame.Rect(470 + index * 148, 44, 138, 35)
 
 
 def fish_sale_card_rect(index: int) -> pygame.Rect:
@@ -416,13 +427,14 @@ def celestial_position_for_phase(phase: float) -> tuple[str, int, int, float]:
 def roof_detail_segment(
     rect: pygame.Rect,
     row: int,
+    roof_overhang: int = DEFAULT_ROOF_OVERHANG,
 ) -> tuple[tuple[int, int], tuple[int, int]]:
     """Return a horizontal detail line clipped inside the triangular roof."""
     apex_y = rect.top - 82
     base_y = rect.top + 43
     y = rect.top + 32 - max(0, int(row)) * 25
     slope_progress = max(0.0, min(1.0, (y - apex_y) / (base_y - apex_y)))
-    half_width = (rect.width / 2 + 28) * slope_progress
+    half_width = (rect.width / 2 + roof_overhang) * slope_progress
     edge_padding = 12
     left = round(rect.centerx - half_width + edge_padding)
     right = round(rect.centerx + half_width - edge_padding)
@@ -551,7 +563,11 @@ class GameApp:
         self.flowers = self._make_flowers()
         self.shop_buttons = self._make_shop_buttons()
         self.blender_mix = {key: 0 for key, _label, _color in BLENDER_INGREDIENTS}
-        self.blender_specials = {"premium_honey": False, "low_fat_milk": False}
+        self.blender_specials = {
+            "premium_honey": False,
+            "low_fat_milk": False,
+            "premium_ice": False,
+        }
         self.blender_message = "재료의 + 버튼을 눌러 맨 앞 손님의 주문과 똑같이 맞추세요."
         self.blender_message_error = False
         self.blender_animation_remaining = 0.0
@@ -572,6 +588,7 @@ class GameApp:
         self.decor_asset_error = ""
         self.home_edit_mode = False
         self.selected_furniture: str | None = None
+        self.home_category = "bed"
         self.home_rotation = 0
         self._load_ingredient_icons()
         self._load_decor_assets()
@@ -953,6 +970,7 @@ class GameApp:
             "golden_blueberries": "blueberries",
             "organic_blueberries": "blueberries",
             "premium_honey": "honey",
+            "premium_ice": "ice",
             "low_fat_milk": "milk",
         }.get(key, key)
         icons = self.ingredient_icons_small if small else self.ingredient_icons
@@ -965,9 +983,10 @@ class GameApp:
             center[0] + (10 if small else 18),
             center[1] - (10 if small else 18),
         )
-        if key in ("golden_blueberries", "premium_honey"):
+        if key in ("golden_blueberries", "premium_honey", "premium_ice"):
             pygame.draw.circle(self.screen, WOOD_DARK, badge_center, badge_radius + 2)
-            pygame.draw.circle(self.screen, GOLD, badge_center, badge_radius)
+            badge_color = WATER_LIGHT if key == "premium_ice" else GOLD
+            pygame.draw.circle(self.screen, badge_color, badge_center, badge_radius)
             pygame.draw.line(
                 self.screen, WHITE,
                 (badge_center[0] - badge_radius // 2, badge_center[1]),
@@ -1539,7 +1558,11 @@ class GameApp:
             self.blender_mix = {
                 key: 0 for key, _label, _color in BLENDER_INGREDIENTS
             }
-            self.blender_specials = {"premium_honey": False, "low_fat_milk": False}
+            self.blender_specials = {
+                "premium_honey": False,
+                "low_fat_milk": False,
+                "premium_ice": False,
+            }
             self.blender_message = "재료의 + 버튼을 눌러 주문 수량을 직접 맞추세요."
             self.blender_message_error = False
             self.overlay = "blender"
@@ -1609,6 +1632,7 @@ class GameApp:
             self.notify("먼저 이 가구를 구입해 주세요.", True)
             return False
         self.selected_furniture = key
+        self.home_category = FURNITURE_CATALOG[key][2]
         layout = self.state.furniture_layout.get(key)
         self.home_rotation = int(layout[2]) % 2 if layout else 0
         return True
@@ -1790,9 +1814,9 @@ class GameApp:
         if ok:
             product = str(FACILITY_CONFIG[key]["product"])
             color = {
-                "honey": GOLD,
-                "ice": WATER_LIGHT,
-                "milk": WHITE,
+                "premium_honey": GOLD,
+                "premium_ice": WATER_LIGHT,
+                "low_fat_milk": WHITE,
             }[product]
             rect = FACILITY_RECTS[key]
             self.spawn_particles((rect.centerx, rect.bottom + 10), color, 22)
@@ -1825,7 +1849,7 @@ class GameApp:
         turning_on = not self.blender_specials[key]
         if turning_on and self.state.inventory(key) < 1:
             label = BAG_ITEM_LABELS[key]
-            self.blender_message = f"{label}이 없어요. 나무를 흔들어 찾아보세요."
+            self.blender_message = f"{label}이 없어요. 해당 생산 시설에서 받아 보세요."
             self.blender_message_error = True
             return
         self.blender_specials[key] = turning_on
@@ -1835,7 +1859,11 @@ class GameApp:
         self.blender_message_error = False
 
     def blender_special_button(self, special_key: str) -> pygame.Rect:
-        ingredient_key = "honey" if special_key == "premium_honey" else "milk"
+        ingredient_key = {
+            "premium_honey": "honey",
+            "low_fat_milk": "milk",
+            "premium_ice": "ice",
+        }[special_key]
         card = next(rect for rect, key, _label, _color in self.blender_cards if key == ingredient_key)
         return pygame.Rect(card.right - 128, card.y + 10, 116, 34)
 
@@ -1964,13 +1992,15 @@ class GameApp:
                 self.overlay = "shop"
             return
         if self.overlay == "home":
-            shortcuts = {
-                pygame.K_1: "bed",
-                pygame.K_2: "drawer",
-                pygame.K_3: "desk",
-                pygame.K_4: "lantern",
-                pygame.K_5: "flowerpot",
-            }
+            shortcuts = dict(zip(
+                (pygame.K_1, pygame.K_2, pygame.K_3, pygame.K_4, pygame.K_5),
+                FURNITURE_CATEGORIES[self.home_category],
+            ))
+            if event.key in (pygame.K_PAGEUP, pygame.K_PAGEDOWN):
+                offset = -1 if event.key == pygame.K_PAGEUP else 1
+                index = (HOME_CATEGORIES.index(self.home_category) + offset) % len(HOME_CATEGORIES)
+                self.home_category = HOME_CATEGORIES[index]
+                return
             if (
                 event.key == pygame.K_g
                 or getattr(event, "scancode", None) == pygame.KSCAN_G
@@ -2017,11 +2047,17 @@ class GameApp:
                 self.toggle_blender_special("premium_honey")
             elif event.key == pygame.K_6:
                 self.toggle_blender_special("low_fat_milk")
+            elif event.key == pygame.K_7:
+                self.toggle_blender_special("premium_ice")
             elif event.key == pygame.K_r:
                 self.blender_mix = {
                     key: 0 for key, _label, _color in BLENDER_INGREDIENTS
                 }
-                self.blender_specials = {"premium_honey": False, "low_fat_milk": False}
+                self.blender_specials = {
+                    "premium_honey": False,
+                    "low_fat_milk": False,
+                    "premium_ice": False,
+                }
                 self.blender_message = "재료를 모두 비웠어요. 다시 직접 넣어 보세요."
                 self.blender_message_error = False
             elif event.key == pygame.K_RETURN:
@@ -2071,7 +2107,11 @@ class GameApp:
                 self.blender_mix = {
                     key: 0 for key, _label, _color in BLENDER_INGREDIENTS
                 }
-                self.blender_specials = {"premium_honey": False, "low_fat_milk": False}
+                self.blender_specials = {
+                    "premium_honey": False,
+                    "low_fat_milk": False,
+                    "premium_ice": False,
+                }
                 self.blender_message = "재료를 모두 비웠어요. 다시 직접 넣어 보세요."
                 self.blender_message_error = False
                 return
@@ -2112,6 +2152,10 @@ class GameApp:
                 self.overlay = "shop"
             return
         if self.overlay == "home":
+            for index, category in enumerate(HOME_CATEGORIES):
+                if furniture_category_rect(index).collidepoint(position):
+                    self.home_category = category
+                    return
             if HOME_EXIT_BUTTON.collidepoint(position):
                 self.home_edit_mode = False
                 self.save()
@@ -2135,7 +2179,7 @@ class GameApp:
                     row = (position[1] - HOME_BUILD_AREA.y) // HOME_GRID_CELL
                     self.place_selected_furniture(column, row)
                     return
-            for index, key in enumerate(FURNITURE_KEYS):
+            for index, key in enumerate(FURNITURE_CATEGORIES[self.home_category]):
                 if furniture_card_rect(index).collidepoint(position):
                     if key in self.state.furniture_owned:
                         self.select_furniture(key)
@@ -2266,7 +2310,8 @@ class GameApp:
         )
 
     def draw_house(self, world_rect: pygame.Rect, title: str, wall: tuple[int, int, int],
-                   roof: tuple[int, int, int], door_x: int | None = None) -> None:
+                   roof: tuple[int, int, int], door_x: int | None = None,
+                   roof_overhang: int = DEFAULT_ROOF_OVERHANG) -> None:
         rect = self.rect_to_screen(world_rect)
         if rect.right < -100 or rect.left > SCREEN_W + 100 or rect.bottom < -120 or rect.top > SCREEN_H + 100:
             return
@@ -2278,12 +2323,15 @@ class GameApp:
         for plank_y in range(rect.top + 24, rect.bottom - 25, 28):
             pygame.draw.line(self.screen, tuple(max(0, c - 18) for c in wall),
                              (rect.left, plank_y), (rect.right, plank_y), 3)
-        roof_poly = [(rect.left - 28, rect.top + 43), (rect.centerx, rect.top - 82),
-                     (rect.right + 28, rect.top + 43)]
+        roof_poly = [
+            (rect.left - roof_overhang, rect.top + 43),
+            (rect.centerx, rect.top - 82),
+            (rect.right + roof_overhang, rect.top + 43),
+        ]
         pygame.draw.polygon(self.screen, roof, roof_poly)
         pygame.draw.polygon(self.screen, tuple(max(0, c - 35) for c in roof), roof_poly, 5)
         for row in range(4):
-            start, end = roof_detail_segment(rect, row)
+            start, end = roof_detail_segment(rect, row, roof_overhang)
             pygame.draw.line(
                 self.screen,
                 tuple(max(0, c - 24) for c in roof),
@@ -2948,7 +2996,13 @@ class GameApp:
         self.draw_facilities()
         self.draw_house(HOUSE, "블루베리 농장집", (244, 210, 151), (112, 73, 72))
         self.draw_house(SHOP, "상점", (240, 223, 174), (64, 124, 101))
-        self.draw_house(CAFE, "블루베리 블렌더", (229, 205, 238), (112, 79, 157))
+        self.draw_house(
+            CAFE,
+            "블루베리 블렌더",
+            (229, 205, 238),
+            (112, 79, 157),
+            roof_overhang=CAFE_ROOF_OVERHANG,
+        )
         self.draw_market()
         self.draw_smoothie_cart()
         self.draw_festival_decorations()
@@ -3391,7 +3445,7 @@ class GameApp:
         rotation: int = 0,
         fit_rect: pygame.Rect | None = None,
     ) -> None:
-        """Draw the first original pixel-art design for each farmhouse item."""
+        """Draw furniture artwork, with the category's base art as a fallback."""
         sprite = self.furniture_sprites.get(key)
         if sprite is not None:
             if rotation % 2:
@@ -3411,6 +3465,7 @@ class GameApp:
             rendered = pygame.transform.scale(sprite, (width, height))
             self.screen.blit(rendered, rendered.get_rect(center=center))
             return
+        key = FURNITURE_CATALOG[key][2]
         x, y = center
         if key == "bed":
             w, h = round(200 * scale), round(84 * scale)
@@ -3480,6 +3535,13 @@ class GameApp:
         pygame.draw.rect(self.screen, WOOD_DARK, room.inflate(12, 12))
         pygame.draw.rect(self.screen, (246, 228, 187), room)
         self.text("나의 농장집", 28, BLUEBERRY_DARK, 78, 49)
+        for index, category in enumerate(HOME_CATEGORIES):
+            tab = furniture_category_rect(index)
+            active = category == self.home_category
+            rounded_rect(self.screen, tab, BLUEBERRY if active else (227, 209, 171),
+                         7, WOOD_DARK, 2)
+            self.text(FURNITURE_CATEGORY_LABELS[category], 17,
+                      WHITE if active else INK, tab.centerx, tab.centery, center=True)
         subtitle = (
             "보관함에서 가구 선택 → 바닥 클릭 · 초록색이면 배치 가능"
             if self.home_edit_mode
@@ -3626,7 +3688,8 @@ class GameApp:
                 503,
             )
 
-        for index, key in enumerate(FURNITURE_KEYS):
+        self.text("종류 탭 / PgUp·PgDn 이동 · 1~5 선택·구입", 13, MUTED, 80, 129)
+        for index, key in enumerate(FURNITURE_CATEGORIES[self.home_category]):
             rect = furniture_card_rect(index)
             owned = key in self.state.furniture_owned
             placed = key in self.state.furniture_layout
@@ -3640,7 +3703,8 @@ class GameApp:
                 BLUEBERRY_DARK if selected else WOOD_DARK,
                 5 if selected else 3,
             )
-            self.draw_furniture(key, (rect.centerx, rect.y + 39), 0.42)
+            self.draw_furniture(key, (rect.centerx, rect.y + 37),
+                                fit_rect=pygame.Rect(0, 0, 150, 68))
             self.text(f"[{index + 1}] {FURNITURE_LABELS[key]}", 15, INK,
                       rect.centerx, rect.y + 75, center=True)
             status = (
@@ -3660,7 +3724,7 @@ class GameApp:
         pygame.draw.rect(self.screen, CREAM, card.inflate(-18, -18))
         self.text("내 손으로 만드는 주문 스무디", 32, BLUEBERRY_DARK,
                   card.centerx, 84, center=True)
-        self.text("+ / -로 주문 맞추기 · 숫자 5 고급 꿀 · 숫자 6 저지방 우유",
+        self.text("+ / - 주문 맞추기 · 5 고급 꿀 · 6 저지방 우유 · 7 고급 얼음",
                   14, MUTED, card.centerx, 119, center=True)
 
         order = self.state.current_order
@@ -3707,11 +3771,16 @@ class GameApp:
             special_key = {
                 "honey": "premium_honey",
                 "milk": "low_fat_milk",
+                "ice": "premium_ice",
             }.get(key)
             if special_key is not None:
                 special = self.blender_special_button(special_key)
                 selected = self.blender_specials[special_key]
-                special_color = GOLD if special_key == "premium_honey" else WATER
+                special_color = {
+                    "premium_honey": GOLD,
+                    "low_fat_milk": WATER,
+                    "premium_ice": WATER_LIGHT,
+                }[special_key]
                 rounded_rect(
                     self.screen,
                     special,
@@ -3720,8 +3789,12 @@ class GameApp:
                     WOOD_DARK,
                     2,
                 )
-                shortcut = "5" if special_key == "premium_honey" else "6"
-                short_label = "고급" if special_key == "premium_honey" else "저지방"
+                shortcut = {
+                    "premium_honey": "5",
+                    "low_fat_milk": "6",
+                    "premium_ice": "7",
+                }[special_key]
+                short_label = "저지방" if special_key == "low_fat_milk" else "고급"
                 selected_mark = "✓" if selected else "+"
                 self.text(
                     f"[{shortcut}] {short_label} {selected_mark} x{self.state.inventory(special_key)}",
@@ -3889,11 +3962,9 @@ class GameApp:
         )
 
         product = str(config["product"])
-        icon = self.ingredient_icons.get(product)
         icon_panel = pygame.Rect(350, 168, 180, 205)
         rounded_rect(self.screen, icon_panel, (248, 228, 181), 15, WOOD_DARK, 4)
-        if icon is not None:
-            self.screen.blit(icon, icon.get_rect(center=(icon_panel.centerx, icon_panel.y + 70)))
+        self.draw_item_icon(product, (icon_panel.centerx, icon_panel.y + 70))
         self.text(str(config["product_name"]), 25, INK,
                   icon_panel.centerx, icon_panel.y + 125, center=True)
         if level > 0:
@@ -4117,7 +4188,9 @@ class GameApp:
                     self.screen, LEAF,
                     (icon_center[0] + 6, icon_center[1] - 20, 15, 10),
                 )
-            label_size = 13 if key in ("golden_blueberries", "premium_honey", "low_fat_milk") else 15
+            label_size = 13 if key in (
+                "golden_blueberries", "premium_honey", "premium_ice", "low_fat_milk"
+            ) else 15
             self.text(BAG_ITEM_LABELS[key], label_size, INK, rect.x + 65, rect.y + 24)
             badge = pygame.Rect(rect.x + 68, rect.y + 49, 48, 29)
             rounded_rect(self.screen, badge, BLUEBERRY_DARK, 8)

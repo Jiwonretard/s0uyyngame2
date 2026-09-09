@@ -236,12 +236,8 @@ def main() -> None:
         fish_sprite,
         "fish_sheet.png",
     )
-    save_group(
-        ("bed", "drawer", "desk", "lantern", "flowerpot"),
-        FURNITURE_DIR,
-        furniture_sprite,
-        "furniture_sheet.png",
-    )
+    from generate_furniture_variants import save_furniture_catalog
+    save_furniture_catalog()
     save_group(
         ("beehive", "ice_maker", "cow_barn"),
         FACILITY_DIR,

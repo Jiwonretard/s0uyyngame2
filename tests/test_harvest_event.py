@@ -783,6 +783,10 @@ class HarvestEventTests(unittest.TestCase):
         self.app.handle_key(pygame.event.Event(
             pygame.KEYDOWN, key=pygame.K_PAGEUP, scancode=0, mod=0,
         ))
+        self.assertEqual(self.app.home_category, "wardrobe")
+        self.app.handle_key(pygame.event.Event(
+            pygame.KEYDOWN, key=pygame.K_PAGEUP, scancode=0, mod=0,
+        ))
         self.assertEqual(self.app.home_category, "flowerpot")
         self.app.handle_click(main.furniture_card_rect(4).center)
         self.assertIn("plant_lavender", self.app.state.furniture_owned)
@@ -795,9 +799,46 @@ class HarvestEventTests(unittest.TestCase):
         self.app.handle_key(pygame.event.Event(
             pygame.KEYDOWN, key=pygame.K_PAGEDOWN, scancode=0, mod=0,
         ))
+        self.assertEqual(self.app.home_category, "wardrobe")
+        self.app.handle_key(pygame.event.Event(
+            pygame.KEYDOWN, key=pygame.K_PAGEDOWN, scancode=0, mod=0,
+        ))
         self.assertEqual(self.app.home_category, "bed")
         # Browsing other categories must not lose the placed plant.
         self.assertEqual(self.app.state.furniture_layout["plant_lavender"], [0, 0, 0])
+
+    def test_wardrobe_purchase_placement_equipment_and_reset(self):
+        import wardrobe_ui
+        self.app.overlay = "home"
+        self.app.open_wardrobe()
+        self.assertEqual(self.app.home_category, "wardrobe")
+        self.assertEqual(self.app.overlay, "home")
+        self.app.state.money = 1500
+        self.assertTrue(self.app.state.buy_furniture("wardrobe")[0])
+        self.app.open_wardrobe()
+        self.assertTrue(self.app.home_edit_mode)
+        self.assertTrue(self.app.state.place_furniture("wardrobe", 0, 0)[0])
+        self.app.handle_key(pygame.event.Event(
+            pygame.KEYDOWN, key=pygame.K_UNKNOWN, scancode=pygame.KSCAN_C, mod=0,
+        ))
+        self.assertEqual(self.app.overlay, "wardrobe")
+        self.app.handle_click(wardrobe_ui.WHALE_RECT.center)
+        self.assertEqual(self.app.state.appearance["outfit"], "whale")
+        self.assertEqual(GameState.load(main.SAVE_PATH).appearance, self.app.state.appearance)
+        for index in range(5):
+            self.app.handle_click(wardrobe_ui.tab_rect(index).center)
+            self.app.handle_click(wardrobe_ui.item_rect(1).center)
+            self.app.draw()
+        self.app.handle_key(pygame.event.Event(
+            pygame.KEYDOWN, key=pygame.K_RIGHT, scancode=0, mod=0,
+        ))
+        self.assertEqual(self.app.wardrobe_direction, "left")
+        self.app.draw()
+        self.app.handle_click(wardrobe_ui.RESET_RECT.center)
+        self.assertEqual(self.app.state.appearance, {})
+        self.assertIs(self.app.player_frames, self.app.original_player_frames)
+        self.app.handle_click(wardrobe_ui.RETURN_RECT.center)
+        self.assertEqual(self.app.overlay, "home")
 
     def test_fish_and_furniture_png_catalogues_are_loaded(self):
         self.assertEqual(set(self.app.fish_icons), set(main.FISH_KEYS))

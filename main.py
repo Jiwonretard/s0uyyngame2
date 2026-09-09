@@ -14,6 +14,8 @@ import sys
 import time
 
 import pygame
+from wardrobe_ui import WardrobeUI
+from dressup import build_frames
 
 from furniture_catalog import FURNITURE_CATALOG, FURNITURE_CATEGORIES, FURNITURE_CATEGORY_LABELS
 
@@ -266,6 +268,7 @@ HOME_BUILD_AREA = pygame.Rect(80, 155, 1120, 320)
 HOME_GRID_CELL = HOME_BUILD_AREA.width // FURNITURE_GRID_COLUMNS
 HOME_EDIT_BUTTON = pygame.Rect(865, 96, 160, 42)
 HOME_EXIT_BUTTON = pygame.Rect(1040, 96, 160, 42)
+HOME_WARDROBE_BUTTON = pygame.Rect(660, 96, 190, 42)
 HOME_ROTATE_BUTTON = pygame.Rect(845, 490, 110, 42)
 HOME_STORE_BUTTON = pygame.Rect(965, 490, 110, 42)
 HOME_DONE_BUTTON = pygame.Rect(1085, 490, 110, 42)
@@ -277,7 +280,7 @@ def furniture_card_rect(index: int) -> pygame.Rect:
 
 
 def furniture_category_rect(index: int) -> pygame.Rect:
-    return pygame.Rect(470 + index * 148, 44, 138, 35)
+    return pygame.Rect(390 + index * 136, 44, 126, 35)
 
 
 def fish_sale_card_rect(index: int) -> pygame.Rect:
@@ -499,7 +502,7 @@ class TreeDrop:
         self.y += 24 * dt
 
 
-class GameApp:
+class GameApp(WardrobeUI):
     def __init__(self) -> None:
         pygame.mixer.pre_init(44100, -16, 2, 512)
         pygame.init()
@@ -596,6 +599,8 @@ class GameApp:
         self.player_frames: dict[str, list[pygame.Surface]] = {}
         self.player_sprite_error = ""
         self._load_player_frames()
+        self.original_player_frames = self.player_frames
+        self.refresh_appearance()
         self._ground_textures = self._make_ground_textures()
         # Reuse full-screen alpha surfaces instead of allocating them every
         # frame. This noticeably lowers pressure on macOS' scaled display.
@@ -1044,6 +1049,13 @@ class GameApp:
 
     def _snap_camera(self) -> None:
         self.camera.update(self._camera_target())
+
+    def refresh_appearance(self) -> None:
+        self.player_frames = (
+            build_frames(self.state.appearance)
+            if self.state.appearance or not self.original_player_frames
+            else self.original_player_frames
+        )
 
     def _camera_target(self) -> pygame.Vector2:
         return pygame.Vector2(
@@ -1897,6 +1909,9 @@ class GameApp:
         )
 
     def handle_key(self, event: pygame.event.Event) -> None:
+        if self.overlay == "wardrobe":
+            self.handle_wardrobe_key(event)
+            return
         if event.key == pygame.K_ESCAPE:
             if self.overlay == "blending":
                 return
@@ -1992,6 +2007,9 @@ class GameApp:
                 self.overlay = "shop"
             return
         if self.overlay == "home":
+            if event.key == pygame.K_c or getattr(event, "scancode", None) == pygame.KSCAN_C:
+                self.open_wardrobe()
+                return
             shortcuts = dict(zip(
                 (pygame.K_1, pygame.K_2, pygame.K_3, pygame.K_4, pygame.K_5),
                 FURNITURE_CATEGORIES[self.home_category],
@@ -2095,6 +2113,9 @@ class GameApp:
             self.interact()
 
     def handle_click(self, position: tuple[int, int]) -> None:
+        if self.overlay == "wardrobe":
+            self.handle_wardrobe_click(position)
+            return
         if self.overlay == "help":
             if pygame.Rect(510, 616, 260, 55).collidepoint(position):
                 self.close_help()
@@ -2152,6 +2173,13 @@ class GameApp:
                 self.overlay = "shop"
             return
         if self.overlay == "home":
+            if HOME_WARDROBE_BUTTON.collidepoint(position):
+                self.open_wardrobe()
+                return
+            layout = self.state.furniture_layout.get("wardrobe")
+            if not self.home_edit_mode and layout and self.furniture_grid_rect("wardrobe", *layout).collidepoint(position):
+                self.open_wardrobe()
+                return
             for index, category in enumerate(HOME_CATEGORIES):
                 if furniture_category_rect(index).collidepoint(position):
                     self.home_category = category
@@ -2861,7 +2889,7 @@ class GameApp:
                 bob = -2 if step_index in (1, 3) else 0
             frame = self.player_frames[self.direction][frame_index]
             self.screen.blit(frame, frame.get_rect(midbottom=(x, y + 2 + bob)))
-            if self.is_moving and self.direction in ("left", "right", "up"):
+            if self.is_moving and not self.state.appearance and self.direction in ("left", "right", "up"):
                 self.draw_walking_feet(x, y, step_index)
             if self.action_timer > 0:
                 self.draw_harvest_basket(x, y)
@@ -3548,6 +3576,9 @@ class GameApp:
             else f"가구를 구입한 뒤 G로 꾸미기 · 보유 {self.state.money:,}코인"
         )
         self.text(subtitle, 14, MUTED, 80, 91)
+        rounded_rect(self.screen, HOME_WARDROBE_BUTTON, BLUEBERRY, 9, WOOD_DARK, 3)
+        self.text("옷장 열기 C", 15, WHITE,
+                  HOME_WARDROBE_BUTTON.centerx, HOME_WARDROBE_BUTTON.centery, center=True)
         rounded_rect(
             self.screen,
             HOME_EDIT_BUTTON,
@@ -4278,6 +4309,8 @@ class GameApp:
             self.draw_fish_market_overlay()
         elif self.overlay == "home":
             self.draw_home_overlay()
+        elif self.overlay == "wardrobe":
+            self.draw_wardrobe_overlay()
         elif self.overlay == "blender":
             self.draw_blender_overlay()
         elif self.overlay == "blending":

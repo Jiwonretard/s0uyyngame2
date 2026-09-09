@@ -28,11 +28,12 @@ FURNITURE_CATALOG = {
     "plant_snake": ("산세베리아 화분", 180, "flowerpot", (2, 3)),
     "plant_echeveria": ("에케베리아 화분", 150, "flowerpot", (2, 2)),
     "plant_lavender": ("라벤더 화분", 300, "flowerpot", (2, 3)),
+    "wardrobe": ("블루벨리 옷장", 1500, "wardrobe", (3, 4)),
 }
 
 FURNITURE_CATEGORY_LABELS = {
     "bed": "침대", "drawer": "서랍", "desk": "책상",
-    "lantern": "랜턴", "flowerpot": "화분",
+    "lantern": "랜턴", "flowerpot": "화분", "wardrobe": "옷장",
 }
 FURNITURE_CATEGORIES = {
     category: tuple(key for key, item in FURNITURE_CATALOG.items() if item[2] == category)

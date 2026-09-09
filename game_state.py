@@ -14,6 +14,7 @@ import time
 from typing import Callable
 
 from furniture_catalog import FURNITURE_COSTS, FURNITURE_LABELS, FURNITURE_FOOTPRINTS
+from wardrobe_catalog import DEFAULT_LOOK, OPTIONS, THEME_SETS, normalized_appearance
 
 
 SAVE_VERSION = 5
@@ -470,6 +471,7 @@ class GameState:
     fish_caught: int = 0
     furniture_owned: list[str] = field(default_factory=list)
     furniture_layout: dict[str, list[int]] = field(default_factory=dict)
+    appearance: dict[str, str] = field(default_factory=dict)
     tree_shaken_days: dict[str, int] = field(default_factory=dict)
     facility_levels: dict[str, int] = field(
         default_factory=lambda: {key: 0 for key in FACILITY_KEYS}
@@ -497,6 +499,22 @@ class GameState:
 
     def inventory(self, key: str) -> int:
         return int(getattr(self, key))
+
+    @property
+    def wardrobe_available(self) -> bool:
+        return "wardrobe" in self.furniture_owned and "wardrobe" in self.furniture_layout
+
+    def equip_cosmetic(self, category: str, key: str) -> bool:
+        if not self.wardrobe_available or category not in OPTIONS or key not in OPTIONS[category]:
+            return False
+        self.appearance = {**DEFAULT_LOOK, **self.appearance, category: key}
+        return True
+
+    def equip_theme(self, theme: str) -> bool:
+        if not self.wardrobe_available or theme not in THEME_SETS:
+            return False
+        self.appearance = {**DEFAULT_LOOK, **self.appearance, **THEME_SETS[theme]}
+        return True
 
     @property
     def current_day(self) -> int:
@@ -1402,6 +1420,7 @@ class GameState:
             for fish_key in FISH_PRICES:
                 setattr(state, fish_key, max(0, int(getattr(state, fish_key))))
             state.fish_caught = max(0, int(state.fish_caught))
+            state.appearance = normalized_appearance(state.appearance)
             raw_furniture = state.furniture_owned if isinstance(state.furniture_owned, list) else []
             state.furniture_owned = [
                 key for key in FURNITURE_COSTS

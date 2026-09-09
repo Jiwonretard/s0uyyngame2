@@ -59,7 +59,22 @@ def variant_sprite(key: str) -> pygame.Surface:
         box(left - 1, 25, right - left + 3, 4, rim)
         line((left + 4, 30), (left + 5, 34), CREAM, 2)
 
-    if key.startswith("bed_"):
+    if key == "wardrobe":
+        poly([(8, 37), (8, 7), (12, 3), (36, 3), (40, 7), (40, 37)], HONEY)
+        box(10, 8, 14, 26, PURPLE)
+        box(24, 8, 14, 26, CREAM)
+        box(26, 10, 10, 19, SKY)
+        line((28, 12), (34, 18), CREAM, 2)
+        line((28, 16), (31, 19), CREAM)
+        box(21, 22, 2, 4, GOLD, GOLD)
+        box(25, 22, 2, 4, GOLD, GOLD)
+        line((13, 13), (21, 13), HONEY)
+        poly([(14, 18), (17, 15), (20, 18)], LILAC)
+        box(13, 18, 9, 11, LILAC)
+        for x in (9, 35):
+            box(x, 37, 4, 3, WOOD)
+        flower(23, 5, LILAC)
+    elif key.startswith("bed_"):
         frame = CREAM if key == "bed_cloud" else HONEY
         box(5, 13, 38, 21, frame)
         box(7, 33, 4, 5, WOOD)
@@ -302,9 +317,9 @@ def save_furniture_catalog() -> None:
     ) if Path(path).exists()), None)
     label_font = pygame.font.Font(font_path, 18)
     title_font = pygame.font.Font(font_path, 26)
-    sheet = pygame.Surface((1200, 1160))
+    sheet = pygame.Surface((1200, 70 + 218 * len(FURNITURE_CATEGORIES)))
     sheet.fill((242, 228, 201))
-    sheet.blit(title_font.render("블루벨리 · 농장집 가구 25종", True, INK), (30, 18))
+    sheet.blit(title_font.render(f"블루벨리 · 농장집 가구 {len(FURNITURE_COSTS)}종", True, INK), (30, 18))
     for row, keys in enumerate(FURNITURE_CATEGORIES.values()):
         for column, key in enumerate(keys):
             sprite = variant_sprite(key)

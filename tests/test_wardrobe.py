@@ -11,7 +11,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import pygame
 from game_state import GameState
 from dressup import build_frames, character_surface
-from wardrobe_catalog import DEFAULT_LOOK, OPTIONS, OUTFITS, THEME_SETS
+from wardrobe_catalog import (
+    COSMETIC_PRICES,
+    DEFAULT_LOOK,
+    DEFAULT_OWNED_COSMETICS,
+    OPTIONS,
+    OUTFITS,
+    THEME_SETS,
+    cosmetic_id,
+    theme_price,
+)
 
 
 class WardrobeTests(unittest.TestCase):
@@ -30,6 +39,9 @@ class WardrobeTests(unittest.TestCase):
         state.buy_furniture("wardrobe")
         self.assertFalse(state.equip_cosmetic("hair", "blonde"))
         state.place_furniture("wardrobe", 0, 0)
+        self.assertFalse(state.equip_cosmetic("hair", "blonde"))
+        state.money = 700
+        self.assertTrue(state.buy_cosmetic("hair", "blonde")[0])
         self.assertTrue(state.equip_cosmetic("hair", "blonde"))
         self.assertFalse(state.equip_cosmetic("hair", "invalid"))
         self.assertFalse(state.equip_cosmetic("invalid", "black"))
@@ -41,8 +53,14 @@ class WardrobeTests(unittest.TestCase):
     def test_twelve_outfits_accessories_and_theme_sets(self):
         state = self.ready_state()
         self.assertEqual(len(OUTFITS), 12)
+        self.assertEqual(set(state.owned_cosmetics), set(DEFAULT_OWNED_COSMETICS))
+        state.money = 100000
         for category, options in OPTIONS.items():
             for key in options:
+                if not state.owns_cosmetic(category, key):
+                    before = state.money
+                    self.assertTrue(state.buy_cosmetic(category, key)[0])
+                    self.assertEqual(before - state.money, COSMETIC_PRICES[category][key])
                 self.assertTrue(state.equip_cosmetic(category, key))
                 self.assertEqual(state.appearance[category], key)
         state.equip_cosmetic("hair", "silver")
@@ -52,25 +70,72 @@ class WardrobeTests(unittest.TestCase):
                 self.assertEqual(state.appearance[category], key)
             self.assertEqual(state.appearance["hair"], "silver")
 
+    def test_signature_items_cost_over_one_thousand_and_sets_buy_missing_parts(self):
+        for theme, pieces in THEME_SETS.items():
+            for category, key in pieces.items():
+                self.assertGreaterEqual(COSMETIC_PRICES[category][key], 1000, (theme, category))
+        state = self.ready_state()
+        blueberry_cost = theme_price("blueberry", state.owned_cosmetics)
+        self.assertEqual(blueberry_cost, 4950)
+        state.money = blueberry_cost - 1
+        self.assertFalse(state.buy_theme("blueberry")[0])
+        state.money += 1
+        self.assertTrue(state.buy_theme("blueberry")[0])
+        self.assertEqual(state.money, 0)
+        self.assertTrue(state.owns_theme("blueberry"))
+        self.assertTrue(state.equip_theme("blueberry"))
+        self.assertEqual(state.appearance["outfit"], "blueberry")
+
+    def test_buying_one_theme_part_reduces_set_price(self):
+        state = self.ready_state()
+        state.money = 10000
+        self.assertTrue(state.buy_cosmetic("outfit", "whale")[0])
+        self.assertEqual(theme_price("whale", state.owned_cosmetics), 3600)
+        self.assertTrue(state.buy_theme("whale")[0])
+        self.assertEqual(state.money, 4600)
+        self.assertEqual(state.daily_money_spent, 1500 + 5400)
+
     def test_appearance_save_legacy_and_invalid_values(self):
         state = self.ready_state()
+        state.money = 10000
+        state.buy_theme("blueberry")
         state.equip_theme("blueberry")
+        state.buy_cosmetic("hair", "lavender")
         state.equip_cosmetic("hair", "lavender")
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "save.json"
             state.save(path)
             loaded = GameState.load(path, now=101)
             self.assertEqual(loaded.appearance, state.appearance)
+            self.assertEqual(loaded.owned_cosmetics, state.owned_cosmetics)
             self.assertTrue(loaded.wardrobe_available)
             data = json.loads(path.read_text())
             del data["appearance"]
             path.write_text(json.dumps(data))
             self.assertEqual(GameState.load(path, now=102).appearance, {})
             data["appearance"] = {"hair": [], "outfit": "removed"}
+            data["owned_cosmetics"] = ["bad", [], cosmetic_id("shoes", "pink")]
             path.write_text(json.dumps(data))
             loaded = GameState.load(path, now=102)
             self.assertEqual(loaded.appearance, DEFAULT_LOOK)
+            self.assertEqual(
+                set(loaded.owned_cosmetics),
+                {*DEFAULT_OWNED_COSMETICS, cosmetic_id("shoes", "pink")},
+            )
             self.assertTrue(loaded.wardrobe_available)
+
+    def test_old_save_grandfathers_equipped_cosmetics(self):
+        state = self.ready_state()
+        state.appearance = {**DEFAULT_LOOK, **THEME_SETS["whale"]}
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "save.json"
+            state.save(path)
+            data = json.loads(path.read_text())
+            del data["owned_cosmetics"]
+            path.write_text(json.dumps(data))
+            loaded = GameState.load(path, now=101)
+            self.assertTrue(loaded.owns_theme("whale"))
+            self.assertTrue(loaded.equip_theme("whale"))
 
     def test_all_outfits_animate_in_four_directions(self):
         for key in OUTFITS:

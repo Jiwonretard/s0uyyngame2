@@ -8,7 +8,7 @@ os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
 import pygame
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from dressup import build_frames, character_surface
-from wardrobe_catalog import DEFAULT_LOOK, OUTFITS, OPTIONS, CATEGORIES, THEME_SETS, option_label
+from wardrobe_catalog import DEFAULT_LOOK, OUTFITS, OPTIONS, CATEGORIES, THEME_SETS, cosmetic_price, option_label
 
 
 def export():
@@ -34,7 +34,11 @@ def export():
             center = (120 + (i % 4) * 240, 165 + (i // 4) * 220)
             sheet.blit(sprite, sprite.get_rect(center=center))
             label = font.render(option_label(category, key), True, (68, 44, 78))
-            sheet.blit(label, label.get_rect(center=(center[0], center[1] + 100)))
+            sheet.blit(label, label.get_rect(center=(center[0], center[1] + 94)))
+            price = cosmetic_price(category, key)
+            price_label = "기본 보유" if price == 0 else f"{price:,}코인"
+            price_text = font.render(price_label, True, (103, 73, 156))
+            sheet.blit(price_text, price_text.get_rect(center=(center[0], center[1] + 119)))
             if category == "outfit":
                 frames = build_frames(look)
                 atlas = pygame.Surface((288, 480), pygame.SRCALPHA)

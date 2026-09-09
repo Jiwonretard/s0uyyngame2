@@ -1,7 +1,7 @@
 """Wardrobe screen and controls, shared with the game's live character renderer."""
 import pygame
 from dressup import character_surface
-from wardrobe_catalog import CATEGORIES, OPTIONS, DEFAULT_LOOK, option_label
+from wardrobe_catalog import CATEGORIES, OPTIONS, DEFAULT_LOOK, option_label, cosmetic_price, theme_price
 
 INK = (55, 39, 69)
 CREAM = (255, 242, 210)
@@ -40,6 +40,11 @@ class WardrobeUI:
         self.overlay = "wardrobe"
 
     def apply_wardrobe_option(self, key):
+        if not self.state.owns_cosmetic(self.wardrobe_category, key):
+            bought, message = self.state.buy_cosmetic(self.wardrobe_category, key)
+            self.notify(message, not bought)
+            if not bought:
+                return
         if self.state.equip_cosmetic(self.wardrobe_category, key):
             self.refresh_appearance()
             self.save()
@@ -65,6 +70,11 @@ class WardrobeUI:
             return
         for rect, theme in ((BLUEBERRY_RECT, "blueberry"), (WHALE_RECT, "whale")):
             if rect.collidepoint(position):
+                if not self.state.owns_theme(theme):
+                    bought, message = self.state.buy_theme(theme)
+                    self.notify(message, not bought)
+                    if not bought:
+                        return
                 if self.state.equip_theme(theme):
                     self.refresh_appearance()
                     self.save()
@@ -84,7 +94,7 @@ class WardrobeUI:
         pygame.draw.rect(self.screen, INK, room.inflate(10, 10), border_radius=12)
         pygame.draw.rect(self.screen, CREAM, room, border_radius=8)
         self.text("블루벨리 옷장", 28, INK, 80, 50)
-        self.text("옷장 기본 구성 · 의상 12종 + 액세서리 · 선택 즉시 착용·자동 저장", 15, MUTED, 420, 62)
+        self.text(f"상품을 구입해 자유롭게 조합 · 보유 {self.state.money:,}코인 · 착용 자동 저장", 15, MUTED, 420, 62)
         for index, category in enumerate(TABS):
             rect = tab_rect(index)
             selected = category == self.wardrobe_category
@@ -105,6 +115,7 @@ class WardrobeUI:
         for index, key in enumerate(OPTIONS[self.wardrobe_category]):
             rect = item_rect(index)
             selected = look[self.wardrobe_category] == key
+            owned = self.state.owns_cosmetic(self.wardrobe_category, key)
             pygame.draw.rect(self.screen, (223, 236, 201) if selected else (250, 229, 192), rect, border_radius=8)
             pygame.draw.rect(self.screen, PURPLE if selected else (185, 150, 109), rect, 3 if selected else 1, border_radius=8)
             preview = {**look, self.wardrobe_category: key}
@@ -115,11 +126,17 @@ class WardrobeUI:
                 self.wardrobe_thumbnails[cache_key] = character_surface(preview, scale=2)
             thumbnail = self.wardrobe_thumbnails[cache_key]
             self.screen.blit(thumbnail, thumbnail.get_rect(center=(rect.centerx, rect.y + 46)))
-            self.text(option_label(self.wardrobe_category, key), 14, INK, rect.centerx, rect.y + 97, center=True)
+            self.text(option_label(self.wardrobe_category, key), 14, INK, rect.centerx, rect.y + 91, center=True)
+            status = "보유" if owned else f"{cosmetic_price(self.wardrobe_category, key):,}코인"
+            self.text(status, 13, PURPLE if owned else MUTED, rect.centerx, rect.y + 111, center=True)
             if selected:
                 self.text("착용", 13, PURPLE, rect.right - 23, rect.y + 12, center=True)
-        for rect, label in ((BLUEBERRY_RECT, "블루베리 세트 한 번에 입기"),
-                            (WHALE_RECT, "고래 세트 한 번에 입기"),
+        blueberry_action = ("입기" if self.state.owns_theme("blueberry") else
+                            f"구매 {theme_price('blueberry', self.state.owned_cosmetics):,}")
+        whale_action = ("입기" if self.state.owns_theme("whale") else
+                        f"구매 {theme_price('whale', self.state.owned_cosmetics):,}")
+        for rect, label in ((BLUEBERRY_RECT, f"블루베리 세트 {blueberry_action}"),
+                            (WHALE_RECT, f"고래 세트 {whale_action}"),
                             (RESET_RECT, "처음 캐릭터로 되돌리기"),
                             (RETURN_RECT, "입고 나가기  E / Esc")):
             pygame.draw.rect(self.screen, PURPLE, rect, border_radius=8)

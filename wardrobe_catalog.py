@@ -1,4 +1,4 @@
-"""The wardrobe's included cosmetics; stable IDs are stored in save files."""
+"""Wardrobe cosmetics, prices and stable IDs stored in save files."""
 
 OUTFITS = {
     "classic": ("보라 멜빵 원피스", (109, 68, 162), (255, 247, 232), "dress"),
@@ -32,6 +32,78 @@ THEME_SETS = {
     "blueberry": {"outfit": "blueberry", "headband": "blueberry", "shoes": "blueberry", "socks": "blueberry"},
     "whale": {"outfit": "whale", "headband": "whale", "shoes": "whale", "socks": "whale"},
 }
+
+# A smoothie normally earns only a few dozen coins, while useful buildings cost
+# around 2,000 and premium furniture reaches 6,000.  Common cosmetics therefore
+# make reachable short-term goals; the two signature themes are late-game sets.
+COSMETIC_PRICES = {
+    "outfit": {
+        "classic": 0, "blueberry": 1600, "whale": 1800, "strawberry": 650,
+        "honey": 700, "mint": 550, "lavender": 850, "cloud": 500,
+        "starlight": 1200, "cream": 600, "forest": 750, "rose": 1100,
+    },
+    "headband": {
+        "shark": 0, "none": 0, "blueberry": 1100, "whale": 1200,
+        "ribbon": 250, "flowers": 400, "star": 500,
+    },
+    "shoes": {
+        "brown": 0, "white": 350, "blueberry": 1200, "whale": 1300,
+        "boots": 550, "pink": 450,
+    },
+    "hair": {
+        "black": 0, "brown": 400, "chestnut": 450, "blonde": 700,
+        "silver": 900, "lavender": 850,
+    },
+    "socks": {
+        "none": 0, "white": 180, "blueberry": 1050, "whale": 1100,
+        "navy": 280, "lace": 320,
+    },
+}
+
+
+def cosmetic_id(category, key):
+    return f"{category}:{key}"
+
+
+DEFAULT_OWNED_COSMETICS = tuple(
+    dict.fromkeys([
+        *(cosmetic_id(category, key) for category, key in DEFAULT_LOOK.items()),
+        cosmetic_id("headband", "none"),
+    ])
+)
+
+
+def cosmetic_price(category, key):
+    return COSMETIC_PRICES[category][key]
+
+
+def theme_price(theme, owned=()):
+    owned_set = set(owned)
+    return sum(
+        cosmetic_price(category, key)
+        for category, key in THEME_SETS[theme].items()
+        if cosmetic_id(category, key) not in owned_set
+    )
+
+
+def normalized_owned_cosmetics(raw, appearance=None, grandfather=False):
+    valid = {
+        cosmetic_id(category, key)
+        for category, options in OPTIONS.items()
+        for key in options
+    }
+    candidates = raw if isinstance(raw, list) else []
+    owned = list(DEFAULT_OWNED_COSMETICS)
+    for item in candidates:
+        if isinstance(item, str) and item in valid and item not in owned:
+            owned.append(item)
+    # Saves created before paid cosmetics keep anything they were already wearing.
+    if grandfather and isinstance(appearance, dict):
+        for category, key in appearance.items():
+            item = cosmetic_id(category, key)
+            if item in valid and item not in owned:
+                owned.append(item)
+    return owned
 
 
 def normalized_appearance(raw):

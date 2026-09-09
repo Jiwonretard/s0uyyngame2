@@ -14,7 +14,18 @@ import time
 from typing import Callable
 
 from furniture_catalog import FURNITURE_COSTS, FURNITURE_LABELS, FURNITURE_FOOTPRINTS
-from wardrobe_catalog import DEFAULT_LOOK, OPTIONS, THEME_SETS, normalized_appearance
+from wardrobe_catalog import (
+    DEFAULT_LOOK,
+    DEFAULT_OWNED_COSMETICS,
+    OPTIONS,
+    THEME_SETS,
+    cosmetic_id,
+    cosmetic_price,
+    normalized_appearance,
+    normalized_owned_cosmetics,
+    option_label,
+    theme_price,
+)
 
 
 SAVE_VERSION = 5
@@ -472,6 +483,7 @@ class GameState:
     furniture_owned: list[str] = field(default_factory=list)
     furniture_layout: dict[str, list[int]] = field(default_factory=dict)
     appearance: dict[str, str] = field(default_factory=dict)
+    owned_cosmetics: list[str] = field(default_factory=lambda: list(DEFAULT_OWNED_COSMETICS))
     tree_shaken_days: dict[str, int] = field(default_factory=dict)
     facility_levels: dict[str, int] = field(
         default_factory=lambda: {key: 0 for key in FACILITY_KEYS}
@@ -504,14 +516,63 @@ class GameState:
     def wardrobe_available(self) -> bool:
         return "wardrobe" in self.furniture_owned and "wardrobe" in self.furniture_layout
 
+    def owns_cosmetic(self, category: str, key: str) -> bool:
+        return cosmetic_id(category, key) in self.owned_cosmetics
+
+    def buy_cosmetic(self, category: str, key: str) -> tuple[bool, str]:
+        if category not in OPTIONS or key not in OPTIONS[category]:
+            return False, "판매하지 않는 꾸미기 상품이에요."
+        if not self.wardrobe_available:
+            return False, "집에 옷장을 먼저 배치해 주세요."
+        label = option_label(category, key)
+        if self.owns_cosmetic(category, key):
+            return False, f"{label}은(는) 이미 가지고 있어요."
+        cost = cosmetic_price(category, key)
+        if self.money < cost:
+            return False, f"{label} 구입에는 {cost:,}코인이 필요해요."
+        self.money -= cost
+        self.daily_money_spent += cost
+        self.owned_cosmetics.append(cosmetic_id(category, key))
+        return True, f"{label}을(를) {cost:,}코인에 구입하고 바로 착용했어요."
+
     def equip_cosmetic(self, category: str, key: str) -> bool:
-        if not self.wardrobe_available or category not in OPTIONS or key not in OPTIONS[category]:
+        if (
+            not self.wardrobe_available
+            or category not in OPTIONS
+            or key not in OPTIONS[category]
+            or not self.owns_cosmetic(category, key)
+        ):
             return False
         self.appearance = {**DEFAULT_LOOK, **self.appearance, category: key}
         return True
 
+    def owns_theme(self, theme: str) -> bool:
+        return theme in THEME_SETS and all(
+            self.owns_cosmetic(category, key)
+            for category, key in THEME_SETS[theme].items()
+        )
+
+    def buy_theme(self, theme: str) -> tuple[bool, str]:
+        if theme not in THEME_SETS:
+            return False, "판매하지 않는 세트예요."
+        if not self.wardrobe_available:
+            return False, "집에 옷장을 먼저 배치해 주세요."
+        if self.owns_theme(theme):
+            return False, "이미 세트의 모든 상품을 가지고 있어요."
+        cost = theme_price(theme, self.owned_cosmetics)
+        if self.money < cost:
+            return False, f"세트 구입에는 {cost:,}코인이 필요해요."
+        self.money -= cost
+        self.daily_money_spent += cost
+        for category, key in THEME_SETS[theme].items():
+            item = cosmetic_id(category, key)
+            if item not in self.owned_cosmetics:
+                self.owned_cosmetics.append(item)
+        label = "블루베리" if theme == "blueberry" else "고래"
+        return True, f"{label} 세트를 {cost:,}코인에 구입하고 바로 착용했어요."
+
     def equip_theme(self, theme: str) -> bool:
-        if not self.wardrobe_available or theme not in THEME_SETS:
+        if not self.wardrobe_available or not self.owns_theme(theme):
             return False
         self.appearance = {**DEFAULT_LOOK, **self.appearance, **THEME_SETS[theme]}
         return True
@@ -1388,6 +1449,7 @@ class GameState:
             allowed = {field_name for field_name in cls.__dataclass_fields__}
             had_rod_durability = "fishing_rod_durability" in raw
             had_furniture_layout = "furniture_layout" in raw
+            had_owned_cosmetics = "owned_cosmetics" in raw
             state = cls(**{key: value for key, value in raw.items() if key in allowed})
             state.active_plots = max(STARTING_PLOTS, min(MAX_PLOTS, int(state.active_plots)))
             state.game_elapsed_seconds = max(0.0, float(state.game_elapsed_seconds))
@@ -1421,6 +1483,11 @@ class GameState:
                 setattr(state, fish_key, max(0, int(getattr(state, fish_key))))
             state.fish_caught = max(0, int(state.fish_caught))
             state.appearance = normalized_appearance(state.appearance)
+            state.owned_cosmetics = normalized_owned_cosmetics(
+                state.owned_cosmetics,
+                state.appearance,
+                grandfather=not had_owned_cosmetics,
+            )
             raw_furniture = state.furniture_owned if isinstance(state.furniture_owned, list) else []
             state.furniture_owned = [
                 key for key in FURNITURE_COSTS

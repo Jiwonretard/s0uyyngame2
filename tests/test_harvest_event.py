@@ -818,12 +818,15 @@ class HarvestEventTests(unittest.TestCase):
         self.app.open_wardrobe()
         self.assertTrue(self.app.home_edit_mode)
         self.assertTrue(self.app.state.place_furniture("wardrobe", 0, 0)[0])
+        self.app.state.money = 10000
         self.app.handle_key(pygame.event.Event(
             pygame.KEYDOWN, key=pygame.K_UNKNOWN, scancode=pygame.KSCAN_C, mod=0,
         ))
         self.assertEqual(self.app.overlay, "wardrobe")
         self.app.handle_click(wardrobe_ui.WHALE_RECT.center)
         self.assertEqual(self.app.state.appearance["outfit"], "whale")
+        self.assertTrue(self.app.state.owns_theme("whale"))
+        self.assertEqual(self.app.state.money, 4600)
         self.assertEqual(GameState.load(main.SAVE_PATH).appearance, self.app.state.appearance)
         for index in range(5):
             self.app.handle_click(wardrobe_ui.tab_rect(index).center)

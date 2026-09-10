@@ -36,7 +36,7 @@ def export():
             label = font.render(option_label(category, key), True, (68, 44, 78))
             sheet.blit(label, label.get_rect(center=(center[0], center[1] + 94)))
             price = cosmetic_price(category, key)
-            price_label = "기본 보유" if price == 0 else f"{price:,}코인"
+            price_label = "기본 보유" if price == 0 else f"{price:,}벨리"
             price_text = font.render(price_label, True, (103, 73, 156))
             sheet.blit(price_text, price_text.get_rect(center=(center[0], center[1] + 119)))
             if category == "outfit":

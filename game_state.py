@@ -305,7 +305,7 @@ def daily_goal_for_day(day: int) -> dict[str, int | str]:
     goals = (
         ("harvest", "블루베리 8개 수확", 8, 45, 3),
         ("smoothies", "주문 스무디 2잔 판매", 2, 80, 4),
-        ("earn", "판매로 60코인 벌기", 60, 55, 3),
+        ("earn", "판매로 60벨리 벌기", 60, 55, 3),
     )
     kind, label, target, reward, reputation = goals[(max(1, day) - 1) % len(goals)]
     return {
@@ -534,11 +534,11 @@ class GameState:
             return False, f"{label}은(는) 이미 가지고 있어요."
         cost = cosmetic_price(category, key)
         if self.money < cost:
-            return False, f"{label} 구입에는 {cost:,}코인이 필요해요."
+            return False, f"{label} 구입에는 {cost:,}벨리가 필요해요."
         self.money -= cost
         self.daily_money_spent += cost
         self.owned_cosmetics.append(cosmetic_id(category, key))
-        return True, f"{label}을(를) {cost:,}코인에 구입하고 바로 착용했어요."
+        return True, f"{label}을(를) {cost:,}벨리에 구입하고 바로 착용했어요."
 
     def equip_cosmetic(self, category: str, key: str) -> bool:
         if (
@@ -566,7 +566,7 @@ class GameState:
             return False, "이미 세트의 모든 상품을 가지고 있어요."
         cost = theme_price(theme, self.owned_cosmetics)
         if self.money < cost:
-            return False, f"세트 구입에는 {cost:,}코인이 필요해요."
+            return False, f"세트 구입에는 {cost:,}벨리가 필요해요."
         self.money -= cost
         self.daily_money_spent += cost
         for category, key in THEME_SETS[theme].items():
@@ -574,7 +574,7 @@ class GameState:
             if item not in self.owned_cosmetics:
                 self.owned_cosmetics.append(item)
         label = "블루베리" if theme == "blueberry" else "고래"
-        return True, f"{label} 세트를 {cost:,}코인에 구입하고 바로 착용했어요."
+        return True, f"{label} 세트를 {cost:,}벨리에 구입하고 바로 착용했어요."
 
     def equip_theme(self, theme: str) -> bool:
         if not self.wardrobe_available or not self.owns_theme(theme):
@@ -885,7 +885,7 @@ class GameState:
         if key == "coins":
             self.money += amount
             self.daily_money_earned += amount
-            return True, f"나무에서 코인 {amount}개가 떨어졌어요!", key, amount
+            return True, f"나무에서 {amount}벨리가 떨어졌어요!", key, amount
         setattr(self, key, self.inventory(key) + amount)
         return True, f"나무에서 {BAG_ITEM_LABELS[key]} {amount}개가 떨어졌어요!", key, amount
 
@@ -922,7 +922,7 @@ class GameState:
             return False, f"농장 등급 {required_rank}부터 {config['name']}을 지을 수 있어요."
         cost = self.facility_build_cost(key)
         if self.money < cost:
-            return False, f"{config['name']} 건설에는 {cost:,}코인이 필요해요."
+            return False, f"{config['name']} 건설에는 {cost:,}벨리가 필요해요."
         selected_day = self.current_day if day is None else max(1, int(day))
         self.money -= cost
         self.daily_money_spent += cost
@@ -945,7 +945,7 @@ class GameState:
         cost = self.facility_upgrade_cost(key)
         assert cost is not None
         if self.money < cost:
-            return False, f"업그레이드에는 {cost:,}코인이 필요해요."
+            return False, f"업그레이드에는 {cost:,}벨리가 필요해요."
         self.money -= cost
         self.daily_money_spent += cost
         self.facility_levels[key] = level + 1
@@ -1119,7 +1119,7 @@ class GameState:
             return False, "판매하지 않는 물건이에요."
         cost = ITEM_COSTS[key]
         if self.money < cost:
-            return False, f"돈이 부족해요. {cost}코인이 필요해요."
+            return False, f"돈이 부족해요. {cost}벨리가 필요해요."
         if not self.can_add_to_bag(key, 1):
             return False, "가방 16칸이 모두 찼어요. 재료를 사용하거나 판매해 주세요."
         self.money -= cost
@@ -1133,7 +1133,7 @@ class GameState:
         if self.fishing_rod:
             return False, "이미 낚싯대를 가지고 있어요."
         if self.money < FISHING_ROD_COST:
-            return False, f"낚싯대를 사려면 {FISHING_ROD_COST:,}코인이 필요해요."
+            return False, f"낚싯대를 사려면 {FISHING_ROD_COST:,}벨리가 필요해요."
         if not self.can_add_to_bag("fishing_rod", 1):
             return False, "가방에 낚싯대를 넣을 한 칸이 필요해요."
         self.money -= FISHING_ROD_COST
@@ -1189,7 +1189,7 @@ class GameState:
         setattr(self, key, self.inventory(key) - 1)
         self.money += price
         self.daily_money_earned += price
-        return True, f"{BAG_ITEM_LABELS[key]} 1마리를 팔아 {price}코인을 벌었어요."
+        return True, f"{BAG_ITEM_LABELS[key]} 1마리를 팔아 {price}벨리를 벌었어요."
 
     def buy_furniture(self, key: str) -> tuple[bool, str]:
         if key not in FURNITURE_COSTS:
@@ -1198,7 +1198,7 @@ class GameState:
             return False, f"{FURNITURE_LABELS[key]}은(는) 이미 집에 있어요."
         cost = FURNITURE_COSTS[key]
         if self.money < cost:
-            return False, f"{FURNITURE_LABELS[key]} 구입에는 {cost:,}코인이 필요해요."
+            return False, f"{FURNITURE_LABELS[key]} 구입에는 {cost:,}벨리가 필요해요."
         self.money -= cost
         self.daily_money_spent += cost
         self.furniture_owned.append(key)
@@ -1309,7 +1309,7 @@ class GameState:
         else:
             self.berries_sold += quantity
             self.daily_blueberries_sold += quantity
-        return True, f"{label} {quantity}개를 팔아 {total:,}코인을 벌었어요."
+        return True, f"{label} {quantity}개를 팔아 {total:,}벨리를 벌었어요."
 
     def sell_blueberry(self, day: int | None = None) -> tuple[bool, str]:
         return self.sell_blueberry_batch("blueberries", 1, day)
@@ -1391,8 +1391,8 @@ class GameState:
         self.prepared_specials = chosen_specials
         self.prepared_bonus = len(chosen_specials) * SPECIAL_SMOOTHIE_BONUS
         sale_price = self.smoothie_sale_price(order)
-        bonus_note = f" 특수 재료 보너스 +{self.prepared_bonus}코인!" if chosen_specials else ""
-        return True, f"주문대로 스무디 완성! 판매하면 {sale_price}코인을 받아요.{bonus_note}"
+        bonus_note = f" 특수 재료 보너스 +{self.prepared_bonus}벨리!" if chosen_specials else ""
+        return True, f"주문대로 스무디 완성! 판매하면 {sale_price}벨리를 받아요.{bonus_note}"
 
     def sell_smoothie(self, day: int | None = None) -> tuple[bool, str]:
         order = self.current_order
@@ -1432,7 +1432,7 @@ class GameState:
         )
         return True, (
             f"{order.customer_name} {customer_type} 만족도 {order.satisfaction}%! "
-            f"{sale_price}코인 · 평판 +{reputation_gain}"
+            f"{sale_price}벨리 · 평판 +{reputation_gain}"
         )
 
     def buy_land(self) -> tuple[bool, str]:
@@ -1440,7 +1440,7 @@ class GameState:
             return False, "농장을 최대로 넓혔어요!"
         cost = self.land_cost
         if self.money < cost:
-            return False, f"텃밭을 사려면 {cost:,}코인이 필요해요."
+            return False, f"텃밭을 사려면 {cost:,}벨리가 필요해요."
         self.money -= cost
         self.daily_money_spent += cost
         self.active_plots += 1
@@ -1453,7 +1453,7 @@ class GameState:
         if self.streetlights_installed[index]:
             return False, "이곳에는 이미 가로등이 설치되어 있어요."
         if self.money < STREETLIGHT_COST:
-            return False, f"가로등 설치에는 {STREETLIGHT_COST:,}코인이 필요해요."
+            return False, f"가로등 설치에는 {STREETLIGHT_COST:,}벨리가 필요해요."
         self.money -= STREETLIGHT_COST
         self.daily_money_spent += STREETLIGHT_COST
         self.streetlights_installed[index] = True

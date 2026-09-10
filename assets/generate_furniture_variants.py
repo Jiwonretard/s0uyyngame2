@@ -333,7 +333,7 @@ def save_furniture_catalog() -> None:
                 round(cropped.get_height() * min(184 / cropped.get_width(), 144 / cropped.get_height())),
             ))
             sheet.blit(fitted, fitted.get_rect(center=(card.centerx, card.y + 80)))
-            for y, label in ((164, FURNITURE_LABELS[key]), (187, f"{FURNITURE_COSTS[key]:,} 코인")):
+            for y, label in ((164, FURNITURE_LABELS[key]), (187, f"{FURNITURE_COSTS[key]:,} 벨리")):
                 rendered = label_font.render(label, True, INK)
                 sheet.blit(rendered, rendered.get_rect(center=(card.centerx, card.y + y)))
     pygame.image.save(sheet, FURNITURE_DIR / "furniture_sheet.png")

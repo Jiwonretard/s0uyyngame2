@@ -27,7 +27,7 @@ class WardrobeUI:
         if not self.state.wardrobe_available:
             self.home_category = "wardrobe"
             if "wardrobe" not in self.state.furniture_owned:
-                self.notify("옷장을 1,500코인에 구입해 집에 놓아 주세요.", True)
+                self.notify("옷장을 1,500벨리에 구입해 집에 놓아 주세요.", True)
             else:
                 self.select_furniture("wardrobe")
                 self.home_edit_mode = True
@@ -40,12 +40,33 @@ class WardrobeUI:
         self.overlay = "wardrobe"
 
     def apply_wardrobe_option(self, key):
-        if not self.state.owns_cosmetic(self.wardrobe_category, key):
-            bought, message = self.state.buy_cosmetic(self.wardrobe_category, key)
+        category = self.wardrobe_category
+        if not self.state.owns_cosmetic(category, key):
+            self.request_purchase(option_label(category, key), cosmetic_price(category, key),
+                                  lambda: self.complete_wardrobe_purchase(category, key))
+            return
+        self.equip_wardrobe_option(category, key)
+
+    def complete_wardrobe_purchase(self, category, key):
+        if not self.state.owns_cosmetic(category, key):
+            bought, message = self.state.buy_cosmetic(category, key)
             self.notify(message, not bought)
             if not bought:
                 return
-        if self.state.equip_cosmetic(self.wardrobe_category, key):
+        self.equip_wardrobe_option(category, key)
+
+    def equip_wardrobe_option(self, category, key):
+        if self.state.equip_cosmetic(category, key):
+            self.refresh_appearance()
+            self.save()
+
+    def complete_theme_purchase(self, theme):
+        if not self.state.owns_theme(theme):
+            bought, message = self.state.buy_theme(theme)
+            self.notify(message, not bought)
+            if not bought:
+                return
+        if self.state.equip_theme(theme):
             self.refresh_appearance()
             self.save()
 
@@ -71,13 +92,11 @@ class WardrobeUI:
         for rect, theme in ((BLUEBERRY_RECT, "blueberry"), (WHALE_RECT, "whale")):
             if rect.collidepoint(position):
                 if not self.state.owns_theme(theme):
-                    bought, message = self.state.buy_theme(theme)
-                    self.notify(message, not bought)
-                    if not bought:
-                        return
-                if self.state.equip_theme(theme):
-                    self.refresh_appearance()
-                    self.save()
+                    label = "블루베리 세트" if theme == "blueberry" else "고래 세트"
+                    self.request_purchase(label, theme_price(theme, self.state.owned_cosmetics),
+                                          lambda theme=theme: self.complete_theme_purchase(theme))
+                else:
+                    self.complete_theme_purchase(theme)
                 return
         for index, category in enumerate(TABS):
             if tab_rect(index).collidepoint(position):
@@ -94,7 +113,7 @@ class WardrobeUI:
         pygame.draw.rect(self.screen, INK, room.inflate(10, 10), border_radius=12)
         pygame.draw.rect(self.screen, CREAM, room, border_radius=8)
         self.text("블루벨리 옷장", 28, INK, 80, 50)
-        self.text(f"상품을 구입해 자유롭게 조합 · 보유 {self.state.money:,}코인 · 착용 자동 저장", 15, MUTED, 420, 62)
+        self.text(f"상품을 구입해 자유롭게 조합 · 보유 {self.state.money:,}벨리 · 착용 자동 저장", 15, MUTED, 420, 62)
         for index, category in enumerate(TABS):
             rect = tab_rect(index)
             selected = category == self.wardrobe_category
@@ -128,7 +147,7 @@ class WardrobeUI:
             thumbnail = self.wardrobe_thumbnails[cache_key]
             self.screen.blit(thumbnail, thumbnail.get_rect(center=(rect.centerx, rect.y + 46)))
             self.text(option_label(self.wardrobe_category, key), 14, INK, rect.centerx, rect.y + 91, center=True)
-            status = "보유" if owned else f"{cosmetic_price(self.wardrobe_category, key):,}코인"
+            status = "보유" if owned else f"{cosmetic_price(self.wardrobe_category, key):,}벨리"
             self.text(status, 13, PURPLE if owned else MUTED, rect.centerx, rect.y + 111, center=True)
             if selected:
                 self.text("착용", 13, PURPLE, rect.right - 23, rect.y + 12, center=True)

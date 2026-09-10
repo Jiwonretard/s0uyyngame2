@@ -43,6 +43,26 @@ class HarvestEventTests(unittest.TestCase):
         self.assertGreaterEqual(len(self.app.particles), 30)
         self.assertTrue(self.app.action_effects)
         self.assertGreater(self.app.impact_timer, 0)
+        self.assertEqual(self.app.action_effects[-1].label, "블루베리 +4")
+
+    def test_fertilized_harvest_labels_the_actual_crop_and_next_crop_is_normal(self):
+        self.app.player.update(*main.PLOT_RECTS[0].center)
+        self.app.state.fertilizer = 1
+        self.app.use_fertilizer_nearby()
+        self.app.state.plots[0].ready_at = 0
+        before = self.app.state.organic_blueberries
+        amount = self.app.state.harvest_yield_for_day()
+        self.app.interact()
+        self.assertEqual(self.app.state.organic_blueberries, before + amount)
+        self.assertEqual(self.app.action_effects[-1].label, f"유기농 블루베리 +{amount}")
+        self.assertIn(f"유기농 블루베리 {amount}개", self.app.toast)
+        self.assertFalse(self.app.state.plots[0].fertilized)
+        # Having organic berries in the bag must not relabel the next plain crop.
+        self.app.state.plots[0].ready_at = 0
+        self.app.interact()
+        self.assertEqual(self.app.action_effects[-1].label, f"블루베리 +{amount}")
+        self.assertNotIn("유기농", self.app.toast)
+        self.assertEqual(self.app.state.organic_blueberries, before + amount)
 
     def test_tree_shake_drops_item_once_per_game_day_with_visible_impact(self):
         self.app.rng = Mock()
@@ -494,77 +514,40 @@ class HarvestEventTests(unittest.TestCase):
         self.assertGreater(len({drop[2] for drop in main.RAIN_DROP_LAYOUT}), 1)
         self.assertGreater(len({drop[3] for drop in main.RAIN_DROP_LAYOUT}), 1)
 
-    def test_status_hud_text_does_not_overlap(self):
-        self.app.state.game_elapsed_seconds = main.DAY_SECONDS + 62
-        self.app.state.reputation = 15
-        self.app.state.honey = 20
-        self.app.state.milk = 34
-        self.app.state.ice = 6
-        drawn: dict[str, pygame.Rect] = {}
+    def test_hud_only_shows_belly_balance_and_daily_goal(self):
+        drawn = {}
         original_text = self.app.text
-
         def capture_text(value, *args, **kwargs):
-            rect = original_text(value, *args, **kwargs)
-            drawn[value] = rect
-            return rect
-
+            drawn[value] = original_text(value, *args, **kwargs)
+            return drawn[value]
         with patch.object(self.app, "text", side_effect=capture_text):
             self.app.draw_hud()
+        self.assertEqual(len(drawn), 2)
+        balance = next(label for label in drawn if label.endswith(" 벨리"))
+        goal = next(label for label in drawn if label.startswith("오늘 목표"))
+        self.assertFalse(drawn[balance].colliderect(drawn[goal]))
+        self.assertTrue(main.HUD_LEFT_RECT.contains(drawn[balance]))
+        self.assertTrue(main.HUD_OBJECTIVE_RECT.contains(drawn[goal]))
+        for removed in ("열매", "씨앗", "스무디", "도움말 H", "평판", "우유", "일차"):
+            self.assertFalse(any(removed in label for label in drawn))
 
-        day_label = "2일차"
-        season_label = "봄 2/7 · 비"
-        time_label = "07:02 아침"
-        rank_label = "등급 2 · 평판 15"
-        inventory_label = "꿀20 우유34 얼음6"
-        help_label = "도움말 H"
-        for first, second in (
-            (day_label, season_label),
-            (season_label, help_label),
-            (time_label, rank_label),
-            (rank_label, help_label),
-            (inventory_label, help_label),
-        ):
-            self.assertFalse(drawn[first].colliderect(drawn[second]))
-        self.assertIn(inventory_label, drawn)
-
-    def test_large_hud_amounts_are_compact_and_stay_inside_stat_cells(self):
-        values = (9_876_543_210, 1_234_567, 87_654_321, 234_567_890)
-        (
-            self.app.state.money,
-            self.app.state.blueberries,
-            self.app.state.seeds,
-            self.app.state.smoothies,
-        ) = values
-        drawn: dict[str, pygame.Rect] = {}
+    def test_large_hud_balance_stays_inside_panel(self):
+        self.app.state.money = 9_876_543_210
+        drawn = {}
         original_text = self.app.text
-
         def capture_text(value, *args, **kwargs):
-            rect = original_text(value, *args, **kwargs)
-            drawn[value] = rect
-            return rect
-
+            drawn[value] = original_text(value, *args, **kwargs)
+            return drawn[value]
         with patch.object(self.app, "text", side_effect=capture_text):
             self.app.draw_hud()
+        self.assertTrue(main.HUD_LEFT_RECT.contains(drawn["98.8억 벨리"]))
 
-        labels = [main.compact_hud_number(value) for value in values]
-        self.assertEqual(labels[0], "98.8억")
-        for label, cell in zip(labels, main.HUD_STAT_RECTS):
-            self.assertGreaterEqual(drawn[label].left, cell.left)
-            self.assertLessEqual(drawn[label].right, cell.right)
-        for first, second in zip(labels, labels[1:]):
-            self.assertFalse(drawn[first].colliderect(drawn[second]))
-
-    def test_top_menu_panels_are_compact_and_centered(self):
-        panels = (
-            main.HUD_LEFT_RECT,
-            main.HUD_OBJECTIVE_RECT,
-            main.HUD_STATUS_RECT,
-        )
-        self.assertTrue(all(panel.height <= 52 for panel in panels))
+    def test_top_menu_panels_are_compact_and_separated(self):
+        panels = (main.HUD_LEFT_RECT, main.HUD_OBJECTIVE_RECT)
+        self.assertTrue(all(panel.height <= 44 for panel in panels))
         self.assertGreaterEqual(panels[0].left, 45)
         self.assertLessEqual(panels[-1].right, main.SCREEN_W - 45)
-        for first, second in zip(panels, panels[1:]):
-            self.assertGreaterEqual(second.left - first.right, 12)
+        self.assertGreaterEqual(panels[1].left - panels[0].right, 12)
 
     def test_customer_queue_has_clear_space_without_tree_overlap(self):
         customer_zones = []
@@ -736,6 +719,8 @@ class HarvestEventTests(unittest.TestCase):
                 self.app.handle_key(pygame.event.Event(
                     pygame.KEYDOWN, key=key_number, scancode=0, mod=0,
                 ))
+                if self.app.pending_purchase is not None:
+                    self.app.handle_key(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_y, mod=0))
         self.assertEqual(set(self.app.state.furniture_owned), set(main.FURNITURE_COSTS))
         self.assertEqual(self.app.state.money, 0)
         self.assertEqual(self.app.state.furniture_layout, {})
@@ -789,6 +774,8 @@ class HarvestEventTests(unittest.TestCase):
         ))
         self.assertEqual(self.app.home_category, "flowerpot")
         self.app.handle_click(main.furniture_card_rect(4).center)
+        self.assertIsNotNone(self.app.pending_purchase)
+        self.app.handle_key(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_y, mod=0))
         self.assertIn("plant_lavender", self.app.state.furniture_owned)
         self.app.handle_click(main.furniture_card_rect(4).center)
         self.assertTrue(self.app.home_edit_mode)
@@ -824,6 +811,9 @@ class HarvestEventTests(unittest.TestCase):
         ))
         self.assertEqual(self.app.overlay, "wardrobe")
         self.app.handle_click(wardrobe_ui.WHALE_RECT.center)
+        self.assertIsNotNone(self.app.pending_purchase)
+        self.assertEqual(self.app.state.money, 10000)
+        self.app.handle_key(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_y, mod=0))
         self.assertEqual(self.app.state.appearance["outfit"], "whale")
         self.assertTrue(self.app.state.owns_theme("whale"))
         self.assertEqual(self.app.state.money, 4600)
@@ -831,6 +821,8 @@ class HarvestEventTests(unittest.TestCase):
         for index in range(5):
             self.app.handle_click(wardrobe_ui.tab_rect(index).center)
             self.app.handle_click(wardrobe_ui.item_rect(1).center)
+            if self.app.pending_purchase is not None:
+                self.app.handle_key(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_y, mod=0))
             self.app.draw()
         self.app.handle_key(pygame.event.Event(
             pygame.KEYDOWN, key=pygame.K_RIGHT, scancode=0, mod=0,

@@ -16,6 +16,7 @@ import time
 import pygame
 from wardrobe_ui import WardrobeUI
 from dressup import build_frames, build_walk_frames, smaller_frames, original_walk_frames, WALK_FRAME_COUNT, fit_character_width
+from purchase_ui import PurchaseUI
 from storage_ui import StorageUI
 
 from furniture_catalog import FURNITURE_CATALOG, FURNITURE_CATEGORIES, FURNITURE_CATEGORY_LABELS
@@ -255,16 +256,8 @@ MARKET_PRODUCT_KEYS = ("blueberries", "golden_blueberries", "organic_blueberries
 MARKET_SALE_AMOUNTS = (1, 10, None)
 SHOP_CLOSE_RECT = pygame.Rect(765, 578, 190, 48)
 SHOP_FISH_BUTTON = pygame.Rect(325, 578, 260, 48)
-HUD_LEFT_RECT = pygame.Rect(53, 8, 360, 52)
-HUD_OBJECTIVE_RECT = pygame.Rect(425, 8, 400, 52)
-HUD_STATUS_RECT = pygame.Rect(837, 8, 390, 52)
-HUD_HELP_RECT = pygame.Rect(1150, 12, 68, 22)
-HUD_STAT_RECTS = (
-    pygame.Rect(174, 10, 78, 42),
-    pygame.Rect(254, 10, 50, 42),
-    pygame.Rect(306, 10, 50, 42),
-    pygame.Rect(358, 10, 55, 42),
-)
+HUD_LEFT_RECT = pygame.Rect(53, 8, 240, 44)
+HUD_OBJECTIVE_RECT = pygame.Rect(705, 8, 522, 44)
 HOME_BUILD_AREA = pygame.Rect(80, 155, 1120, 320)
 HOME_GRID_CELL = HOME_BUILD_AREA.width // FURNITURE_GRID_COLUMNS
 HOME_EDIT_BUTTON = pygame.Rect(865, 96, 160, 42)
@@ -504,7 +497,7 @@ class TreeDrop:
         self.y += 24 * dt
 
 
-class GameApp(WardrobeUI, StorageUI):
+class GameApp(WardrobeUI, StorageUI, PurchaseUI):
     def __init__(self) -> None:
         pygame.mixer.pre_init(44100, -16, 2, 512)
         pygame.init()
@@ -538,6 +531,7 @@ class GameApp(WardrobeUI, StorageUI):
             self.overlay = "daily_report"
         else:
             self.overlay = None
+        self.pending_purchase = None
         self.toast = "이제 캐릭터를 직접 움직여 농장을 운영하세요!"
         if load_errors:
             self.toast = "저장 파일을 읽지 못해 새 농장으로 시작했어요."
@@ -1343,7 +1337,8 @@ class GameApp(WardrobeUI, StorageUI):
                          color, self.rng.uniform(0.55, 1.0), self.rng.uniform(3, 7))
             )
 
-    def spawn_harvest_impact(self, point: tuple[float, float], amount: int) -> None:
+    def spawn_harvest_impact(self, point: tuple[float, float], amount: int,
+                             *, organic: bool = False) -> None:
         colors = (BLUEBERRY, BLUEBERRY_DARK, (190, 176, 235), LEAF, GOLD)
         for index in range(34):
             angle = math.tau * index / 34 + self.rng.uniform(-0.1, 0.1)
@@ -1358,8 +1353,9 @@ class GameApp(WardrobeUI, StorageUI):
                     self.rng.uniform(8, 14),
                 )
             )
+        crop_name = "유기농 블루베리" if organic else "블루베리"
         self.action_effects.append(
-            ActionEffect(point[0], point[1] - 88, f"블루베리 +{amount}", BLUEBERRY_DARK)
+            ActionEffect(point[0], point[1] - 88, f"{crop_name} +{amount}", BLUEBERRY_DARK)
         )
         self.action_timer = 0.36
         self.impact_timer = 0.28
@@ -1431,7 +1427,7 @@ class GameApp(WardrobeUI, StorageUI):
                 prompt = (
                     "가로등 · 저녁부터 새벽까지 자동 점등"
                     if installed
-                    else f"가로등 설치 ({STREETLIGHT_COST:,}코인)"
+                    else f"가로등 설치 ({STREETLIGHT_COST:,}벨리)"
                 )
                 candidates.append((gap, {
                     "kind": "streetlight",
@@ -1447,7 +1443,7 @@ class GameApp(WardrobeUI, StorageUI):
             else "새 주문을 기다리는 중"
         )
         sell_prompt = (
-            f"주문 스무디 판매 (+{self.state.smoothie_sale_price(order)}코인 · 대기 {self.state.customers_waiting}명)"
+            f"주문 스무디 판매 (+{self.state.smoothie_sale_price(order)}벨리 · 대기 {self.state.customers_waiting}명)"
             if order is not None
             else "새 손님을 기다리는 중"
         )
@@ -1461,7 +1457,7 @@ class GameApp(WardrobeUI, StorageUI):
              sell_prompt),
             ("land", (980, 650), 86,
              "농장 최대 확장 완료" if self.state.active_plots >= MAX_PLOTS
-             else f"텃밭 1칸 구입하기 ({self.state.land_cost:,}코인)"),
+             else f"텃밭 1칸 구입하기 ({self.state.land_cost:,}벨리)"),
         ]
         for kind, point, radius, prompt in fixed:
             gap = distance(position, point)
@@ -1501,7 +1497,7 @@ class GameApp(WardrobeUI, StorageUI):
                 if self.state.farm_rank < int(config["unlock_rank"]):
                     prompt = f"{config['name']} 잠김 · 농장 등급 {config['unlock_rank']} 필요"
                 else:
-                    prompt = f"{config['name']} 건설하기 ({self.state.facility_build_cost(key):,}코인)"
+                    prompt = f"{config['name']} 건설하기 ({self.state.facility_build_cost(key):,}벨리)"
             elif self.state.facility_is_ready(key):
                 prompt = f"{config['product_name']} {self.state.facility_yield(key)}개 준비됨 · 시설 관리"
             else:
@@ -1523,10 +1519,12 @@ class GameApp(WardrobeUI, StorageUI):
         kind = target["kind"]
         if kind == "plot":
             before_harvested = self.state.berries_harvested
+            before_organic = self.state.organic_blueberries
             ok, message = self.state.use_plot(target["index"])
             if ok and self.state.berries_harvested > before_harvested:
                 self.spawn_harvest_impact(
-                    target["point"], self.state.berries_harvested - before_harvested
+                    target["point"], self.state.berries_harvested - before_harvested,
+                    organic=self.state.organic_blueberries > before_organic,
                 )
             elif ok:
                 self.action_effects.append(
@@ -1665,6 +1663,10 @@ class GameApp(WardrobeUI, StorageUI):
             self.save()
 
     def buy_furniture(self, key: str) -> None:
+        self.request_purchase(FURNITURE_LABELS[key], FURNITURE_COSTS[key],
+                              lambda: self.complete_furniture_purchase(key))
+
+    def complete_furniture_purchase(self, key: str) -> None:
         ok, message = self.state.buy_furniture(key)
         self.notify(message, not ok)
         if ok:
@@ -1800,7 +1802,7 @@ class GameApp(WardrobeUI, StorageUI):
 
     def use_fishing(self, pond_edge: tuple[float, float]) -> None:
         if self.fishing_phase == "idle" and not self.state.fishing_rod:
-            self.notify("낚싯대가 없어요. 상점에서 2,000코인에 구입하세요.", True)
+            self.notify("낚싯대가 없어요. 상점에서 2,000벨리에 구입하세요.", True)
             return
         now = time.time()
         if self.fishing_phase == "idle":
@@ -1942,6 +1944,9 @@ class GameApp(WardrobeUI, StorageUI):
         )
 
     def handle_key(self, event: pygame.event.Event) -> None:
+        if self.pending_purchase is not None:
+            self.handle_purchase_key(event)
+            return
         if self.overlay == "storage":
             self.handle_storage_key(event)
             return
@@ -2152,6 +2157,9 @@ class GameApp(WardrobeUI, StorageUI):
             self.interact()
 
     def handle_click(self, position: tuple[int, int]) -> None:
+        if self.pending_purchase is not None:
+            self.handle_purchase_click(position)
+            return
         if self.overlay == "storage":
             self.handle_storage_click(position)
             return
@@ -2296,8 +2304,6 @@ class GameApp(WardrobeUI, StorageUI):
             if pygame.Rect(510, 614, 260, 48).collidepoint(position):
                 self.overlay = None
             return
-        if self.overlay is None and HUD_HELP_RECT.collidepoint(position):
-            self.overlay = "help"
 
     def draw_ground(self) -> None:
         season = self.state.season
@@ -2469,7 +2475,7 @@ class GameApp(WardrobeUI, StorageUI):
                 bx = rect.centerx - 38 + i * 19
                 pygame.draw.rect(self.screen, BLUEBERRY_DARK, (bx - 7, rect.y + 126, 15, 15))
                 pygame.draw.rect(self.screen, BLUEBERRY, (bx - 5, rect.y + 128, 11, 11))
-        self.text(f"한 알 {self.state.raw_blueberry_price()}코인", 15, MUTED,
+        self.text(f"한 알 {self.state.raw_blueberry_price()}벨리", 15, MUTED,
                   rect.centerx, rect.y + 161, center=True)
 
     def draw_smoothie_cart(self) -> None:
@@ -2628,7 +2634,7 @@ class GameApp(WardrobeUI, StorageUI):
             )
             sale_price = self.state.smoothie_sale_price(order)
             bonus = " · 축제 2배" if is_blueberry_festival(self.state.current_day) else ""
-            self.text(f"받을 돈  {sale_price}코인{bonus}", 13, RED,
+            self.text(f"받을 돈  {sale_price}벨리{bonus}", 13, RED,
                       bubble.centerx, bubble.y + 64,
                       center=True)
             mood_label = "아주 만족" if order.satisfaction >= 85 else (
@@ -2754,7 +2760,7 @@ class GameApp(WardrobeUI, StorageUI):
         label = (
             "최대 확장"
             if self.state.active_plots >= MAX_PLOTS
-            else f"새 텃밭 {self.state.land_cost:,}코인"
+            else f"새 텃밭 {self.state.land_cost:,}벨리"
         )
         self.text(label, 15, INK, sign.centerx, sign.centery, center=True)
 
@@ -2773,7 +2779,7 @@ class GameApp(WardrobeUI, StorageUI):
             sign = pygame.Rect(x - sign_width // 2, y - 93, sign_width, 54)
             rounded_rect(self.screen, sign, (244, 216, 151), 8, WOOD_DARK, 3)
             self.text(site_name, 14, INK, sign.centerx, sign.y + 16, center=True)
-            self.text(f"{STREETLIGHT_COST:,}코인", 13, BLUEBERRY_DARK,
+            self.text(f"{STREETLIGHT_COST:,}벨리", 13, BLUEBERRY_DARK,
                       sign.centerx, sign.y + 38, center=True)
             return
 
@@ -2824,7 +2830,7 @@ class GameApp(WardrobeUI, StorageUI):
             self.text("잠김" if locked else "건설 부지", 15, RED if locked else INK,
                       rect.centerx, rect.centery - 8, center=True)
             self.text(
-                f"등급 {config['unlock_rank']}" if locked else f"{self.state.facility_build_cost(key):,}코인",
+                f"등급 {config['unlock_rank']}" if locked else f"{self.state.facility_build_cost(key):,}벨리",
                 13,
                 MUTED,
                 rect.centerx,
@@ -3012,7 +3018,7 @@ class GameApp(WardrobeUI, StorageUI):
             y -= round(math.sin(min(1.0, progress) * math.pi) * 35)
             self.draw_item_icon(drop.key, (x, y), small=True)
             label = (
-                f"+{drop.amount}코인"
+                f"+{drop.amount}벨리"
                 if drop.key == "coins"
                 else f"{BAG_ITEM_LABELS[drop.key]} +{drop.amount}"
             )
@@ -3139,18 +3145,18 @@ class GameApp(WardrobeUI, StorageUI):
             state.money >= STREETLIGHT_COST
             and not all(state.streetlights_installed)
         ):
-            return f"사진으로 지정한 가로등 부지에서 E를 누르면 {STREETLIGHT_COST:,}코인에 설치할 수 있어요."
+            return f"사진으로 지정한 가로등 부지에서 E를 누르면 {STREETLIGHT_COST:,}벨리에 설치할 수 있어요."
         if state.active_plots < MAX_PLOTS and state.money >= state.land_cost:
-            return f"확장 간판에서 다음 텃밭을 {state.land_cost:,}코인에 살 수 있어요."
+            return f"확장 간판에서 다음 텃밭을 {state.land_cost:,}벨리에 살 수 있어요."
         order = state.current_order
         if order is None:
             return "새 손님과 주문을 기다리고 있어요."
         if state.smoothies < 1:
             return (
                 f"앞 주문: 블루베리 3 · 꿀 {order.honey} · 우유 {order.milk} · "
-                f"얼음 {order.ice} → {state.smoothie_sale_price(order)}코인"
+                f"얼음 {order.ice} → {state.smoothie_sale_price(order)}벨리"
             )
-        return f"완성된 주문 스무디를 카트에서 팔면 {state.smoothie_sale_price(order)}코인을 받아요."
+        return f"완성된 주문 스무디를 카트에서 팔면 {state.smoothie_sale_price(order)}벨리를 받아요."
 
     def game_clock(self) -> tuple[int, int, int, float]:
         elapsed = max(0.0, self.state.game_elapsed_seconds)
@@ -3284,85 +3290,22 @@ class GameApp(WardrobeUI, StorageUI):
             self.screen.blit(self._heat_veil, (0, 0))
 
     def draw_hud(self) -> None:
+        # Only currency on the left and today's goal on the right.
+        for panel in (HUD_LEFT_RECT, HUD_OBJECTIVE_RECT):
+            pygame.draw.rect(self.screen, (45, 43, 39), panel.move(3, 4))
+            pygame.draw.rect(self.screen, WOOD_DARK, panel.inflate(4, 4))
+            pygame.draw.rect(self.screen, (247, 218, 148), panel)
         left = HUD_LEFT_RECT
-        pygame.draw.rect(self.screen, (45, 43, 39), left.move(3, 4))
-        pygame.draw.rect(self.screen, WOOD_DARK, left.inflate(4, 4))
-        pygame.draw.rect(self.screen, (247, 218, 148), left)
-        self.text("블루베리 밸리", 16, BLUEBERRY_DARK, left.x + 10, 17)
-        stats = [
-            ("코인", self.state.money, GOLD),
-            ("열매", self.state.blueberries, BLUEBERRY),
-            ("씨앗", self.state.seeds, GREEN),
-            ("스무디", self.state.smoothies, (182, 82, 160)),
-        ]
-        for stat_rect, (label, value, color) in zip(HUD_STAT_RECTS, stats):
-            icon_x = stat_rect.x
-            pygame.draw.rect(self.screen, WOOD_DARK, (icon_x, 22, 10, 10))
-            pygame.draw.rect(self.screen, color, (icon_x + 2, 24, 6, 6))
-            text_x = icon_x + 12
-            self.text(label, 13, MUTED, text_x, 11)
-            value_label = compact_hud_number(value)
-            available_width = stat_rect.right - text_x - 2
-            value_size = 14 if self.text_width(value_label, 14) <= available_width else 13
-            value_label = self.fitted_text(value_label, value_size, available_width)
-            self.text(value_label, value_size, INK, text_x, 33)
-
-        objective = HUD_OBJECTIVE_RECT
-        pygame.draw.rect(self.screen, (45, 43, 39), objective.move(3, 4))
-        pygame.draw.rect(self.screen, WOOD_DARK, objective.inflate(4, 4))
-        pygame.draw.rect(self.screen, (246, 224, 165), objective)
+        pygame.draw.rect(self.screen, WOOD_DARK, (left.x + 12, left.centery - 7, 14, 14))
+        pygame.draw.rect(self.screen, GOLD, (left.x + 14, left.centery - 5, 10, 10))
+        balance = self.fitted_text(f"{compact_hud_number(self.state.money)} 벨리", 18, left.width - 50)
+        self.text(balance, 18, INK, left.x + 38, left.centery - 11)
         goal = self.state.daily_goal()
-        goal_progress = min(self.state.daily_goal_progress(), int(goal["target"]))
-        self.text(
-            f"오늘 목표 · {goal['label']}  {goal_progress}/{goal['target']}",
-            13, BLUEBERRY_DARK, objective.x + 13, 12,
-        )
-        objective_text = self.fitted_text(
-            self.current_objective(), 13, objective.width - 26
-        )
-        self.text(objective_text, 13, INK, objective.x + 13, 34)
-
-        right = HUD_STATUS_RECT
-        pygame.draw.rect(self.screen, (45, 43, 39), right.move(3, 4))
-        pygame.draw.rect(self.screen, WOOD_DARK, right.inflate(4, 4))
-        pygame.draw.rect(self.screen, (247, 218, 148), right)
-        day, hour, minute, phase = self.game_clock()
-        season, season_day, _year = season_for_day(day)
-        day_label = f"{day}일차"
-        period = day_period_for_phase(phase)
-        time_label = f"{hour:02d}:{minute:02d} {period}"
-        season_label = (
-            f"{season} {season_day}/{DAYS_PER_SEASON} · "
-            f"{WEATHER_LABELS[self.state.weather]}"
-        )
-        rank_label = (
-            f"등급 {self.state.farm_rank} · "
-            f"평판 {compact_hud_number(self.state.reputation)}"
-        )
-        inventory_label = (
-            f"꿀{compact_hud_number(self.state.honey)} "
-            f"우유{compact_hud_number(self.state.milk)} "
-            f"얼음{compact_hud_number(self.state.ice)}"
-        )
-        day_rect = pygame.Rect(847, 10, 42, 20)
-        season_rect = pygame.Rect(893, 10, 247, 20)
-        time_rect = pygame.Rect(847, 32, 88, 20)
-        rank_rect = pygame.Rect(939, 32, 120, 20)
-        inventory_rect = pygame.Rect(1063, 32, 155, 20)
-        day_label = self.fitted_text(day_label, 13, day_rect.width)
-        season_label = self.fitted_text(season_label, 13, season_rect.width)
-        time_label = self.fitted_text(time_label, 15, time_rect.width)
-        rank_label = self.fitted_text(rank_label, 13, rank_rect.width)
-        inventory_label = self.fitted_text(inventory_label, 13, inventory_rect.width)
-        self.text(day_label, 13, MUTED, day_rect.centerx, 20, center=True)
-        self.text(season_label, 13, INK, season_rect.centerx, 20, center=True)
-        self.text(time_label, 15, INK, time_rect.centerx, 42, center=True)
-        self.text(rank_label, 13, BLUEBERRY_DARK, rank_rect.centerx, 42, center=True)
-        self.text(inventory_label, 13, INK, inventory_rect.centerx, 42, center=True)
-        pygame.draw.rect(self.screen, WOOD_DARK, HUD_HELP_RECT.inflate(2, 2))
-        pygame.draw.rect(self.screen, PURPLE_LIGHT, HUD_HELP_RECT)
-        self.text("도움말 H", 13, BLUEBERRY_DARK,
-                  HUD_HELP_RECT.centerx, HUD_HELP_RECT.centery, center=True)
+        progress = min(self.state.daily_goal_progress(), int(goal["target"]))
+        label = f"오늘 목표 · {goal['label']}  {progress}/{goal['target']}"
+        objective = HUD_OBJECTIVE_RECT
+        label = self.fitted_text(label, 15, objective.width - 26)
+        self.text(label, 15, BLUEBERRY_DARK, objective.x + 13, objective.centery - 9)
 
     def draw_prompt(self, target=_INTERACTION_UNSET) -> None:
         if target is _INTERACTION_UNSET:
@@ -3417,7 +3360,7 @@ class GameApp(WardrobeUI, StorageUI):
             self.draw_item_icon(key, (rect.centerx, rect.y + 48))
             self.text(f"[{product_index + 1}] {label}", 18, INK,
                       rect.centerx, rect.y + 92, center=True)
-            self.text(f"보유 {amount:,}개 · 개당 {price:,}코인", 13, MUTED,
+            self.text(f"보유 {amount:,}개 · 개당 {price:,}벨리", 13, MUTED,
                       rect.centerx, rect.y + 119, center=True)
             for amount_index, button_label in enumerate(("1개", "10개", "전부")):
                 sale_button = market_sale_button_rect(product_index, amount_index)
@@ -3438,7 +3381,7 @@ class GameApp(WardrobeUI, StorageUI):
         pygame.draw.rect(self.screen, WOOD, card)
         pygame.draw.rect(self.screen, CREAM, card.inflate(-18, -18))
         self.text("상점", 32, BLUEBERRY_DARK, card.centerx, 91, center=True)
-        self.text(f"보유 코인  {self.state.money}", 18, INK, card.centerx, 128, center=True)
+        self.text(f"보유 벨리  {self.state.money}", 18, INK, card.centerx, 128, center=True)
         self.text("숫자 1~6 구매 · F 물고기 판매", 14, MUTED,
                   card.centerx, 160, center=True)
         amounts = {
@@ -3469,7 +3412,7 @@ class GameApp(WardrobeUI, StorageUI):
             status = (
                 f"내구도 {self.state.fishing_rod_durability}/{FISHING_ROD_MAX_DURABILITY}"
                 if already_owned
-                else f"{price:,}코인 · 보유 {amounts[key]}"
+                else f"{price:,}벨리 · 보유 {amounts[key]}"
             )
             self.text(status, 14, WHITE,
                       text_center_x, rect.y + 53, center=True)
@@ -3491,7 +3434,7 @@ class GameApp(WardrobeUI, StorageUI):
                   card.centerx, 108, center=True)
         self.text("연못의 찌가 물속으로 잠길 때 E를 눌러 낚아 올리세요.",
                   15, MUTED, card.centerx, 150, center=True)
-        self.text(f"보유 코인  {self.state.money:,}", 17, INK,
+        self.text(f"보유 벨리  {self.state.money:,}", 17, INK,
                   card.centerx, 186, center=True)
 
         for index, key in enumerate(FISH_KEYS):
@@ -3504,7 +3447,7 @@ class GameApp(WardrobeUI, StorageUI):
                       rect.centerx, rect.y + 151, center=True)
             badge = pygame.Rect(rect.x + 22, rect.bottom - 58, rect.width - 44, 36)
             rounded_rect(self.screen, badge, WATER, 9, WOOD_DARK, 2)
-            self.text(f"1마리 +{FISH_PRICES[key]:,}코인", 15, WHITE,
+            self.text(f"1마리 +{FISH_PRICES[key]:,}벨리", 15, WHITE,
                       badge.centerx, badge.centery, center=True)
 
         back = pygame.Rect(510, 555, 260, 52)
@@ -3621,7 +3564,7 @@ class GameApp(WardrobeUI, StorageUI):
         subtitle = (
             "보관함에서 가구 선택 → 바닥 클릭 · 초록색이면 배치 가능"
             if self.home_edit_mode
-            else f"가구를 구입한 뒤 G로 꾸미기 · 보유 {self.state.money:,}코인"
+            else f"가구를 구입한 뒤 G로 꾸미기 · 보유 {self.state.money:,}벨리"
         )
         self.text(subtitle, 14, MUTED, 80, 91)
         rounded_rect(self.screen, HOME_DRAWER_BUTTON, BLUEBERRY, 7, WOOD_DARK, 2)
@@ -3792,7 +3735,7 @@ class GameApp(WardrobeUI, StorageUI):
             status = (
                 "배치됨" if placed
                 else "보관 중" if owned
-                else f"{FURNITURE_COSTS[key]:,}코인"
+                else f"{FURNITURE_COSTS[key]:,}벨리"
             )
             self.text(status, 13, GREEN_DARK if owned else BLUEBERRY_DARK,
                       rect.centerx, rect.y + 97, center=True)
@@ -3836,7 +3779,7 @@ class GameApp(WardrobeUI, StorageUI):
             )
             displayed_price = self.state.smoothie_sale_price(order) + selected_bonus
             bonus_note = f" · 특수 재료 +{selected_bonus}" if selected_bonus else ""
-            self.text(f"완성 판매가  {displayed_price}코인{bonus_note}", 14, RED,
+            self.text(f"완성 판매가  {displayed_price}벨리{bonus_note}", 14, RED,
                       ticket.centerx, ticket.y + 87, center=True)
         else:
             self.text("현재 기다리는 주문이 없어요.", 18, MUTED,
@@ -3931,7 +3874,7 @@ class GameApp(WardrobeUI, StorageUI):
                   card.centerx, 91, center=True)
         selected_bonus = sum(self.blender_specials.values()) * SPECIAL_SMOOTHIE_BONUS
         blend_note = (
-            f"특수 재료 보너스 +{selected_bonus}코인 · 3초 동안 갈아요."
+            f"특수 재료 보너스 +{selected_bonus}벨리 · 3초 동안 갈아요."
             if selected_bonus
             else "재료가 부드러워질 때까지 3초만 기다려 주세요."
         )
@@ -4067,7 +4010,7 @@ class GameApp(WardrobeUI, StorageUI):
                   status_panel.centerx, status_panel.y + 68, center=True)
         if level <= 0:
             status = (
-                f"건설 가능 · {self.state.facility_build_cost(key):,}코인"
+                f"건설 가능 · {self.state.facility_build_cost(key):,}벨리"
                 if unlocked
                 else f"잠김 · 농장 등급 {required_rank} 필요"
             )
@@ -4097,7 +4040,7 @@ class GameApp(WardrobeUI, StorageUI):
                 upgrade_text = "최고 단계"
             else:
                 next_rank = required_rank + level
-                upgrade_text = f"Lv.{level + 1} 업그레이드 · {upgrade_cost:,}코인 · 등급 {next_rank}"
+                upgrade_text = f"Lv.{level + 1} 업그레이드 · {upgrade_cost:,}벨리 · 등급 {next_rank}"
         self.text(main_text, 18, BLUEBERRY_DARK, info.centerx, info.y + 28, center=True)
         self.text(upgrade_text, 15, MUTED, info.centerx, info.y + 64, center=True)
 
@@ -4133,8 +4076,8 @@ class GameApp(WardrobeUI, StorageUI):
                   card.centerx, 122, center=True)
 
         metrics = [
-            ("판매 수입", f"+{int(report['earned']):,}코인", GREEN_DARK),
-            ("사용한 돈", f"-{int(report['spent']):,}코인", RED),
+            ("판매 수입", f"+{int(report['earned']):,}벨리", GREEN_DARK),
+            ("사용한 돈", f"-{int(report['spent']):,}벨리", RED),
             ("블루베리 수확", f"{int(report['harvested'])}개", BLUEBERRY_DARK),
             ("스무디 판매", f"{int(report['smoothies_sold'])}잔", (139, 69, 148)),
         ]
@@ -4146,7 +4089,7 @@ class GameApp(WardrobeUI, StorageUI):
             self.text(value, 22, color, rect.centerx, rect.y + 48, center=True)
 
         profit = int(report["profit"])
-        self.text(f"오늘의 순이익  {profit:+,}코인", 22,
+        self.text(f"오늘의 순이익  {profit:+,}벨리", 22,
                   GREEN_DARK if profit >= 0 else RED, card.centerx, 365, center=True)
         goal_box = pygame.Rect(365, 398, 550, 86)
         goal_complete = bool(report["goal_complete"])
@@ -4163,7 +4106,7 @@ class GameApp(WardrobeUI, StorageUI):
             15, INK, goal_box.centerx, goal_box.y + 48, center=True,
         )
         reward_text = (
-            f"보상 +{report['reward']}코인 · 평판 +{report['reputation_reward']}"
+            f"보상 +{report['reward']}벨리 · 평판 +{report['reputation_reward']}"
             if goal_complete else "내일 다시 도전해 보세요."
         )
         self.text(reward_text, 14, MUTED, goal_box.centerx, goal_box.y + 70, center=True)
@@ -4376,6 +4319,8 @@ class GameApp(WardrobeUI, StorageUI):
             self.draw_bag_overlay()
         elif self.overlay == "help":
             self.draw_help_overlay()
+        if self.pending_purchase is not None:
+            self.draw_purchase_confirmation()
         pygame.display.flip()
 
     def run(self) -> None:

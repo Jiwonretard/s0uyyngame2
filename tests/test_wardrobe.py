@@ -10,7 +10,7 @@ os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import pygame
 from game_state import GameState
-from dressup import SKIN, build_frames, character_surface, product_surface
+from dressup import SKIN, build_frames, character_surface, product_surface, fit_character_width
 from wardrobe_catalog import (
     COSMETIC_PRICES,
     DEFAULT_LOOK,
@@ -163,3 +163,26 @@ class WardrobeTests(unittest.TestCase):
                 self.assertNotIn(SKIN, {icon.get_at((x, y))[:3] for x in range(icon.get_width()) for y in range(icon.get_height())})
                 products.append(pygame.image.tostring(icon, "RGBA"))
             self.assertEqual(len(products), len(set(products)), category)
+
+    def test_width_adjustment_keeps_canvas_height_and_feet_anchored(self):
+        source = pygame.Surface((96, 120), pygame.SRCALPHA)
+        pygame.draw.rect(source, (255, 255, 255), (18, 15, 60, 100))
+        original = source.get_bounding_rect()
+        for factor in (0.90, 1.08):
+            adjusted = fit_character_width(source, factor)
+            bounds = adjusted.get_bounding_rect()
+            self.assertEqual(adjusted.get_size(), source.get_size())
+            self.assertEqual((bounds.top, bounds.bottom), (original.top, original.bottom))
+            self.assertLessEqual(abs(bounds.centerx - original.centerx), 1)
+            self.assertAlmostEqual(bounds.width / original.width, factor, delta=0.03)
+
+    def test_balanced_profiles_mirror_without_clipping(self):
+        for outfit in OUTFITS:
+            for step in range(3):
+                left = character_surface({'outfit': outfit}, 'left', step)
+                right = character_surface({'outfit': outfit}, 'right', step)
+                self.assertEqual(pygame.image.tostring(right, 'RGBA'),
+                                 pygame.image.tostring(pygame.transform.flip(left, True, False), 'RGBA'))
+                bounds = left.get_bounding_rect()
+                self.assertGreater(bounds.left, 0)
+                self.assertLess(bounds.right, left.get_width())

@@ -15,7 +15,7 @@ import time
 
 import pygame
 from wardrobe_ui import WardrobeUI
-from dressup import build_frames, build_walk_frames, smaller_frames, original_walk_frames, WALK_FRAME_COUNT
+from dressup import build_frames, build_walk_frames, smaller_frames, original_walk_frames, WALK_FRAME_COUNT, fit_character_width
 from storage_ui import StorageUI
 
 from furniture_catalog import FURNITURE_CATALOG, FURNITURE_CATEGORIES, FURNITURE_CATEGORY_LABELS
@@ -602,6 +602,20 @@ class GameApp(WardrobeUI, StorageUI):
         self.player_sprite_error = ""
         self._load_player_frames()
         self.original_player_frames = smaller_frames(self.player_frames)
+        for direction in ("down", "up"):
+            if direction in self.original_player_frames:
+                self.original_player_frames[direction] = [
+                    fit_character_width(frame, 0.90)
+                    for frame in self.original_player_frames[direction]
+                ]
+        # Existing saves with no custom outfit also receive the selected profile.
+        default_profiles = smaller_frames(build_frames({}))
+        for direction in ("left", "right"):
+            if direction in self.original_player_frames:
+                size = self.original_player_frames[direction][0].get_size()
+                self.original_player_frames[direction] = [
+                    pygame.transform.scale(frame, size) for frame in default_profiles[direction]
+                ]
         self.refresh_appearance()
         self._ground_textures = self._make_ground_textures()
         # Reuse full-screen alpha surfaces instead of allocating them every
@@ -1064,6 +1078,13 @@ class GameApp(WardrobeUI, StorageUI):
             if self.state.appearance or not self.original_player_frames
             else original_walk_frames(self.original_player_frames)
         )
+        if not self.state.appearance and self.original_player_frames:
+            default_walk = build_walk_frames({})
+            for direction in ("left", "right"):
+                size = self.original_player_frames[direction][0].get_size()
+                self.player_walk_frames[direction] = [
+                    pygame.transform.scale(frame, size) for frame in default_walk[direction]
+                ]
 
     def _camera_target(self) -> pygame.Vector2:
         return pygame.Vector2(

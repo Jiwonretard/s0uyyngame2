@@ -12,8 +12,149 @@ SKIN = (255, 218, 182)
 WHITE = (255, 248, 231)
 
 
+def fit_character_width(surface, factor):
+    """Adjust silhouette width without changing height, canvas or foot anchor.
+
+    Used only while generating cached frames, never in the per-frame draw loop.
+    """
+    width, height = surface.get_size()
+    adjusted = pygame.transform.scale(surface, (round(width * factor), height))
+    result = pygame.Surface((width, height), pygame.SRCALPHA)
+    result.blit(adjusted, ((width - adjusted.get_width()) // 2, 0))
+    return result
+
+
+def _headband(look, rect, poly):
+    band = look["headband"]
+    if band != "none":
+        rect((104, 77, 103), 8, 7, 16, 1)
+    if band in ("shark", "whale"):
+        color = (51, 101, 161) if band == "shark" else (60, 151, 199)
+        poly(INK, [(7, 5), (9, 2), (18, 2), (23, 5), (26, 1), (27, 6), (22, 8), (8, 8)])
+        poly(color, [(8, 5), (10, 3), (18, 3), (23, 6), (26, 3), (26, 6), (21, 7), (8, 7)])
+        rect(WHITE, 9, 7, 12, 1)
+        rect(WHITE, 10, 4, 2, 2)
+        rect(INK, 10, 4, 1, 1)
+        if band == "shark":
+            poly(color, [(15, 3), (18, 0), (19, 4)])
+        else:
+            rect((171, 229, 239), 16, 0, 1, 2)
+            rect((171, 229, 239), 14, 0, 5, 1)
+    elif band == "blueberry":
+        for x, y in ((12, 3), (17, 2), (15, 5)):
+            rect((48, 38, 99), x, y, 3, 3)
+            rect((135, 110, 206), x, y, 1, 1)
+        poly((106, 160, 83), [(17, 3), (20, 0), (22, 1), (19, 4)])
+    elif band == "ribbon":
+        poly((220, 134, 171), [(10, 2), (16, 4), (10, 7)])
+        poly((244, 171, 192), [(22, 2), (16, 4), (22, 7)])
+        rect(WHITE, 15, 4, 3, 2)
+    elif band == "flowers":
+        for x in (9, 15, 21):
+            rect((137, 179, 98), x - 1, 5, 6, 2)
+            rect(WHITE, x, 3, 4, 3)
+            rect((238, 187, 86), x + 1, 4, 2, 1)
+    elif band == "star":
+        poly((243, 198, 88), [(19, 0), (21, 3), (25, 3), (22, 5), (23, 8), (19, 6), (16, 8), (17, 4), (15, 3), (18, 3)])
+
+
+def rounded_profile(look, direction, step, scale, phase):
+    """Chosen candidate 2, with the player's purchased cosmetic layers."""
+    c = pygame.Surface((96, 120), pygame.SRCALPHA)
+    def rect(color, x, y, w, h):
+        pygame.draw.rect(c, color, (round(x*3), round(y*3), round(w*3), round(h*3)))
+    def poly(color, points):
+        pygame.draw.polygon(c, color, [(round(x*3), round(y*3)) for x, y in points])
+
+    _, cloth, trim, style = OUTFITS[look["outfit"]]
+    hair = HAIR_COLORS[look["hair"]][1]
+    shoe = SHOES[look["shoes"]][1]
+    sock = SOCKS[look["socks"]][1]
+    stride = (0, -1, 1)[step] if phase is None else math.sin(phase)
+    poly(INK, [(7, 11), (9, 7), (18, 6), (23, 8), (25, 12), (25, 27), (23, 31), (16, 30), (16, 18)])
+    poly(hair, [(18, 9), (23, 10), (24, 15), (24, 28), (22, 30), (18, 28)])
+    rect(tuple(min(255, channel+15) for channel in hair), 22, 13, 1, 14)
+    for index in (1, 0):
+        s = stride * (1 if index == 0 else -1)
+        x = 15 + index + s*2
+        lift = max(0, s)*1.4
+        rect(SKIN if index == 0 else (224, 183, 156), x, 30, 3, 6-lift)
+        if sock:
+            top = 30 if look["socks"] == "navy" else 32
+            rect(sock, x, top, 3, 36-lift-top)
+            if look["socks"] in ("blueberry", "whale"):
+                stripe = (91, 60, 137) if look["socks"] == "blueberry" else (68, 145, 174)
+                rect(stripe, x, 33, 3, 0.7)
+            elif look["socks"] == "lace":
+                rect(WHITE, x-0.4, 32, 3.8, 0.7)
+        if style in ("overalls", "pajamas"):
+            rect(cloth, x, 30, 3, 3-lift)
+        boot = 2.5 if look["shoes"] == "boots" else 0
+        rect(INK, x-1, 35-lift-boot, 5, 2+boot)
+        rect(shoe, x-0.4, 35-lift-boot, 3.7, 1.4+boot)
+        if look["shoes"] in ("white", "whale"):
+            rect(WHITE, x-0.5, 36-lift, 4, 0.6)
+    rect(SKIN, 14, 19, 5, 5)
+    if style in ("shorts", "overalls", "pajamas", "sailor"):
+        poly(INK, [(12, 22), (21, 22), (22, 33), (10, 33)])
+        rect(cloth, 12, 23, 9, 9)
+    else:
+        poly(INK, [(12, 22), (21, 22), (22, 28), (25, 33), (9, 33), (11, 27)])
+        poly(cloth, [(13, 23), (20, 23), (21, 29), (23, 32), (11, 32), (12, 27)])
+    rect(tuple(min(255, channel+30) for channel in cloth), 11, 31, 11, 1)
+    rect(trim, 12, 22, 9, 3)
+    if style in ("dress", "shorts", "overalls"):
+        rect(cloth, 13, 22, 1.5, 8)
+        rect(tuple(max(0, channel-25) for channel in cloth), 12.5, 27, 2, 2)
+    elif style == "berry":
+        poly((103, 161, 80), [(13, 22), (17, 24), (14, 25)])
+        for x, y in ((13, 27), (16, 30)):
+            rect((48, 38, 99), x, y, 2, 2)
+            rect((135, 110, 206), x, y, 0.7, 0.7)
+    elif style == "sailor":
+        poly((35, 72, 127), [(13, 22), (17, 25), (20, 22), (18, 26), (14, 25)])
+        rect(trim, 12, 30, 8, 1)
+    elif style == "check":
+        for x, y in ((13, 26), (15, 29), (20, 31)):
+            rect(trim, x, y, 1.5, 1.5)
+    elif style == "apron":
+        poly(trim, [(13, 25), (16, 25), (17, 32), (12, 32)])
+        rect((233, 177, 48), 13, 28, 2, 2)
+    elif style in ("cardigan", "coat", "blouse"):
+        rect(trim, 13, 24, 2, 7)
+        for y in (26, 29):
+            rect((240, 193, 93), 14, y, 0.7, 0.7)
+        if style == "blouse":
+            rect(trim, 12, 30, 9, 2)
+    elif style == "pajamas":
+        rect(trim, 13, 26, 3, 1.5)
+    elif style == "party":
+        rect(trim, 12, 31, 10, 1)
+        poly(trim, [(13, 26), (15, 28), (12, 29)])
+    arm_x = 18-stride*1.1
+    rect(INK, arm_x-0.7, 23, 4, 8)
+    rect(trim, arm_x, 23, 2.6, 5.5)
+    rect(SKIN, arm_x, 28.5, 2.6, 1.8)
+    poly(SKIN, [(9, 11), (18, 10), (21, 13), (21, 18), (18, 21), (12, 21), (9, 19), (8, 17), (9, 14)])
+    poly(hair, [(8, 11), (9, 9), (18, 8), (22, 11), (21, 18), (19, 15), (19, 12), (16, 12), (14, 13), (10, 12)])
+    rect(INK, 10.5, 14, 2.3, 2.3)
+    rect(WHITE, 10.7, 14, 0.8, 0.8)
+    rect((247, 154, 174), 13, 17, 3, 1.8)
+    poly((202, 88, 113), [(9.5, 18), (12, 18), (11.5, 19.5), (10, 19.2)])
+    # The rounder skull sits two design pixels below the front-view hairline.
+    _headband(look, lambda color,x,y,w,h: rect(color,x,y+2,w,h),
+              lambda color,points: poly(color, [(x,y+2) for x,y in points]))
+    # A little depth through the head, body and feet matches the slimmer front.
+    c = fit_character_width(c, 1.08)
+    if direction == "right":
+        c = pygame.transform.flip(c, True, False)
+    return pygame.transform.scale(c, (32*scale, 40*scale))
+
+
 def character_surface(appearance, direction="down", step=0, scale=3, *, phase=None):
     look = {**DEFAULT_LOOK, **appearance}
+    if direction in ("left", "right"):
+        return rounded_profile(look, direction, step, scale, phase)
     _, cloth, trim, style = OUTFITS[look["outfit"]]
     hair = HAIR_COLORS[look["hair"]][1]
     shoe = SHOES[look["shoes"]][1]
@@ -183,7 +324,7 @@ def character_surface(appearance, direction="down", step=0, scale=3, *, phase=No
     if direction == "right":
         c = pygame.transform.flip(c, True, False)
     # Side poses face left before mirroring. 3x nearest-neighbour keeps pixels crisp.
-    return pygame.transform.scale(c, (32 * scale, 40 * scale))
+    return pygame.transform.scale(fit_character_width(c, 0.90), (32 * scale, 40 * scale))
 
 
 def build_frames(appearance):
@@ -192,7 +333,8 @@ def build_frames(appearance):
 
 
 WALK_FRAME_COUNT = 12
-CHARACTER_SCALE = 0.9
+# Two successive 10% reductions: 90% * 90% of the original dimensions.
+CHARACTER_SCALE = 0.81
 
 
 def smaller_frames(frames):

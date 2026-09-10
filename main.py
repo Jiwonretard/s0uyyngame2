@@ -256,8 +256,7 @@ MARKET_PRODUCT_KEYS = ("blueberries", "golden_blueberries", "organic_blueberries
 MARKET_SALE_AMOUNTS = (1, 10, None)
 SHOP_CLOSE_RECT = pygame.Rect(765, 578, 190, 48)
 SHOP_FISH_BUTTON = pygame.Rect(325, 578, 260, 48)
-HUD_LEFT_RECT = pygame.Rect(53, 8, 240, 44)
-HUD_OBJECTIVE_RECT = pygame.Rect(705, 8, 522, 44)
+HUD_LEFT_RECT = pygame.Rect(53, 8, 240, 60)
 HOME_BUILD_AREA = pygame.Rect(80, 155, 1120, 320)
 HOME_GRID_CELL = HOME_BUILD_AREA.width // FURNITURE_GRID_COLUMNS
 HOME_EDIT_BUTTON = pygame.Rect(865, 96, 160, 42)
@@ -3290,22 +3289,18 @@ class GameApp(WardrobeUI, StorageUI, PurchaseUI):
             self.screen.blit(self._heat_veil, (0, 0))
 
     def draw_hud(self) -> None:
-        # Only currency on the left and today's goal on the right.
-        for panel in (HUD_LEFT_RECT, HUD_OBJECTIVE_RECT):
-            pygame.draw.rect(self.screen, (45, 43, 39), panel.move(3, 4))
-            pygame.draw.rect(self.screen, WOOD_DARK, panel.inflate(4, 4))
-            pygame.draw.rect(self.screen, (247, 218, 148), panel)
+        # Currency and current day share one compact panel; no goal panel.
         left = HUD_LEFT_RECT
-        pygame.draw.rect(self.screen, WOOD_DARK, (left.x + 12, left.centery - 7, 14, 14))
-        pygame.draw.rect(self.screen, GOLD, (left.x + 14, left.centery - 5, 10, 10))
+        pygame.draw.rect(self.screen, (45, 43, 39), left.move(3, 4))
+        pygame.draw.rect(self.screen, WOOD_DARK, left.inflate(4, 4))
+        pygame.draw.rect(self.screen, (247, 218, 148), left)
+        pygame.draw.rect(self.screen, WOOD_DARK, (left.x + 12, left.y + 12, 14, 14))
+        pygame.draw.rect(self.screen, GOLD, (left.x + 14, left.y + 14, 10, 10))
         balance = self.fitted_text(f"{compact_hud_number(self.state.money)} 벨리", 18, left.width - 50)
-        self.text(balance, 18, INK, left.x + 38, left.centery - 11)
-        goal = self.state.daily_goal()
-        progress = min(self.state.daily_goal_progress(), int(goal["target"]))
-        label = f"오늘 목표 · {goal['label']}  {progress}/{goal['target']}"
-        objective = HUD_OBJECTIVE_RECT
-        label = self.fitted_text(label, 15, objective.width - 26)
-        self.text(label, 15, BLUEBERRY_DARK, objective.x + 13, objective.centery - 9)
+        self.text(balance, 18, INK, left.x + 38, left.y + 8)
+        day, hour, minute, _phase = self.game_clock()
+        date_time = self.fitted_text(f"{day:,}일차  {hour:02d}:{minute:02d}", 15, left.width - 50)
+        self.text(date_time, 15, MUTED, left.x + 38, left.y + 35)
 
     def draw_prompt(self, target=_INTERACTION_UNSET) -> None:
         if target is _INTERACTION_UNSET:

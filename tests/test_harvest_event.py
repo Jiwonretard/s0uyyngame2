@@ -514,7 +514,7 @@ class HarvestEventTests(unittest.TestCase):
         self.assertGreater(len({drop[2] for drop in main.RAIN_DROP_LAYOUT}), 1)
         self.assertGreater(len({drop[3] for drop in main.RAIN_DROP_LAYOUT}), 1)
 
-    def test_hud_only_shows_belly_balance_and_daily_goal(self):
+    def test_hud_only_shows_balance_and_day_in_same_panel(self):
         drawn = {}
         original_text = self.app.text
         def capture_text(value, *args, **kwargs):
@@ -524,11 +524,13 @@ class HarvestEventTests(unittest.TestCase):
             self.app.draw_hud()
         self.assertEqual(len(drawn), 2)
         balance = next(label for label in drawn if label.endswith(" 벨리"))
-        goal = next(label for label in drawn if label.startswith("오늘 목표"))
-        self.assertFalse(drawn[balance].colliderect(drawn[goal]))
+        day = next(label for label in drawn if "일차" in label)
+        current_day, hour, minute, _phase = self.app.game_clock()
+        self.assertEqual(day, f"{current_day:,}일차  {hour:02d}:{minute:02d}")
+        self.assertLessEqual(drawn[balance].bottom, drawn[day].top)
         self.assertTrue(main.HUD_LEFT_RECT.contains(drawn[balance]))
-        self.assertTrue(main.HUD_OBJECTIVE_RECT.contains(drawn[goal]))
-        for removed in ("열매", "씨앗", "스무디", "도움말 H", "평판", "우유", "일차"):
+        self.assertTrue(main.HUD_LEFT_RECT.contains(drawn[day]))
+        for removed in ("열매", "씨앗", "스무디", "도움말 H", "평판", "우유", "오늘 목표"):
             self.assertFalse(any(removed in label for label in drawn))
 
     def test_large_hud_balance_stays_inside_panel(self):
@@ -542,12 +544,17 @@ class HarvestEventTests(unittest.TestCase):
             self.app.draw_hud()
         self.assertTrue(main.HUD_LEFT_RECT.contains(drawn["98.8억 벨리"]))
 
-    def test_top_menu_panels_are_compact_and_separated(self):
-        panels = (main.HUD_LEFT_RECT, main.HUD_OBJECTIVE_RECT)
-        self.assertTrue(all(panel.height <= 44 for panel in panels))
-        self.assertGreaterEqual(panels[0].left, 45)
-        self.assertLessEqual(panels[-1].right, main.SCREEN_W - 45)
-        self.assertGreaterEqual(panels[1].left - panels[0].right, 12)
+    def test_top_menu_is_compact_and_day_changes_at_day_boundary(self):
+        self.assertLessEqual(main.HUD_LEFT_RECT.height, 60)
+        self.assertGreaterEqual(main.HUD_LEFT_RECT.left, 45)
+        for elapsed, label in ((0, "1일차  06:00"),
+                               (main.DAY_SECONDS * 0.75, "1일차  00:00"),
+                               (main.DAY_SECONDS - 0.1, "1일차  05:59"),
+                               (main.DAY_SECONDS, "2일차  06:00")):
+            self.app.state.game_elapsed_seconds = elapsed
+            with patch.object(self.app, "text", wraps=self.app.text) as draw_text:
+                self.app.draw_hud()
+            self.assertIn(label, [call.args[0] for call in draw_text.call_args_list])
 
     def test_customer_queue_has_clear_space_without_tree_overlap(self):
         customer_zones = []

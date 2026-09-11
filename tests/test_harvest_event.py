@@ -846,6 +846,62 @@ class HarvestEventTests(unittest.TestCase):
         self.assertEqual(self.app.state.furniture_layout["bed"], [2, 1, 1])
         self.app.draw()
 
+    def test_farmhouse_is_walkable_and_furniture_works_up_close(self):
+        event = pygame.event.Event(
+            pygame.KEYDOWN,
+            key=pygame.K_e,
+            scancode=pygame.KSCAN_E,
+            mod=0,
+        )
+        self.app.player.update(main.HOUSE.centerx, main.HOUSE.bottom + 37)
+        self.app.interact()
+        self.assertEqual(self.app.overlay, "home")
+        self.assertEqual(tuple(self.app.home_player), main.HOME_PLAYER_START)
+
+        class PressedKeys:
+            def __getitem__(self, key):
+                return key == pygame.K_d
+
+        start_x = self.app.home_player.x
+        with patch("pygame.key.get_pressed", return_value=PressedKeys()):
+            self.app.move_home_player(0.1)
+        self.assertGreater(self.app.home_player.x, start_x)
+        self.assertEqual(self.app.direction, "right")
+        self.assertTrue(self.app.is_moving)
+
+        self.app.state.furniture_owned = ["bed", "drawer", "wardrobe"]
+        self.app.state.furniture_layout = {
+            "bed": [1, 1, 0],
+            "drawer": [10, 1, 0],
+            "wardrobe": [20, 1, 0],
+        }
+
+        bed = self.app.home_furniture_rect("bed")
+        self.app.home_player.update(bed.centerx, bed.bottom + 25)
+        self.assertEqual(self.app.nearest_home_interaction()["kind"], "bed")
+        self.app.handle_key(event)
+        self.assertEqual(self.app.home_resting, "bed")
+        self.app.handle_key(event)
+        self.assertFalse(self.app.home_resting)
+
+        drawer = self.app.home_furniture_rect("drawer")
+        self.app.home_player.update(drawer.centerx, drawer.bottom + 25)
+        self.app.handle_key(event)
+        self.assertEqual(self.app.overlay, "storage")
+        self.app.handle_key(event)
+        self.assertEqual(self.app.overlay, "home")
+
+        wardrobe = self.app.home_furniture_rect("wardrobe")
+        self.app.home_player.update(wardrobe.centerx, wardrobe.bottom + 25)
+        self.app.handle_key(event)
+        self.assertEqual(self.app.overlay, "wardrobe")
+        self.app.handle_key(event)
+        self.assertEqual(self.app.overlay, "home")
+
+        self.app.home_player.update(main.HOME_DOOR_RECT.center)
+        self.app.handle_key(event)
+        self.assertIsNone(self.app.overlay)
+
     def test_new_furniture_tabs_support_click_purchase_and_edit_selection(self):
         self.app.overlay = "home"
         self.app.state.money = 10000

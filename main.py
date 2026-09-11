@@ -268,6 +268,9 @@ HOME_DRAWER_BUTTON = pygame.Rect(450, 109, 195, 29)
 HOME_ROTATE_BUTTON = pygame.Rect(845, 490, 110, 42)
 HOME_STORE_BUTTON = pygame.Rect(965, 490, 110, 42)
 HOME_DONE_BUTTON = pygame.Rect(1085, 490, 110, 42)
+HOME_DOOR_RECT = pygame.Rect(HOME_BUILD_AREA.centerx - 42, HOME_BUILD_AREA.bottom - 18, 84, 22)
+HOME_PLAYER_START = (HOME_BUILD_AREA.centerx, HOME_BUILD_AREA.bottom - 30)
+HOME_PLAYER_SPEED = 205.0
 _INTERACTION_UNSET = object()
 
 
@@ -590,6 +593,8 @@ class GameApp(WardrobeUI, StorageUI, PurchaseUI):
         self.selected_furniture: str | None = None
         self.home_category = "bed"
         self.home_rotation = 0
+        self.home_player = pygame.Vector2(HOME_PLAYER_START)
+        self.home_resting: str | None = None
         self._load_ingredient_icons()
         self._load_decor_assets()
         self._load_audio()
@@ -1236,9 +1241,57 @@ class GameApp(WardrobeUI, StorageUI, PurchaseUI):
         self.is_moving = distance > 0.001
         self.walk_phase = (self.walk_phase + distance / 25.0) % 4.0
 
+    def home_furniture_rect(self, key: str) -> pygame.Rect | None:
+        layout = self.state.furniture_layout.get(key)
+        if layout is None:
+            return None
+        return self.furniture_grid_rect(key, *layout)
+
+    def _home_collides(self, x: float, y: float) -> bool:
+        feet = self._feet_rect(x, y)
+        walk_area = HOME_BUILD_AREA.inflate(-14, -12)
+        if not walk_area.contains(feet):
+            return True
+        for key, layout in self.state.furniture_layout.items():
+            rect = self.furniture_grid_rect(key, *layout).inflate(-8, -8)
+            if feet.colliderect(rect):
+                return True
+        return False
+
+    def move_home_player(self, dt: float) -> None:
+        if (self.overlay != "home" or self.home_edit_mode or self.home_resting
+                or self.pending_purchase is not None):
+            return
+        keys = pygame.key.get_pressed()
+        movement = pygame.Vector2(
+            int(keys[pygame.K_RIGHT] or keys[pygame.K_d])
+            - int(keys[pygame.K_LEFT] or keys[pygame.K_a]),
+            int(keys[pygame.K_DOWN] or keys[pygame.K_s])
+            - int(keys[pygame.K_UP] or keys[pygame.K_w]),
+        )
+        self.is_moving = movement.length_squared() > 0
+        if not self.is_moving:
+            return
+        movement = movement.normalize() * HOME_PLAYER_SPEED * dt
+        if abs(movement.x) > abs(movement.y):
+            self.direction = "right" if movement.x > 0 else "left"
+        else:
+            self.direction = "down" if movement.y > 0 else "up"
+        previous = self.home_player.copy()
+        next_x = self.home_player.x + movement.x
+        if not self._home_collides(next_x, self.home_player.y):
+            self.home_player.x = next_x
+        next_y = self.home_player.y + movement.y
+        if not self._home_collides(self.home_player.x, next_y):
+            self.home_player.y = next_y
+        travelled = self.home_player.distance_to(previous)
+        self.is_moving = travelled > 0.001
+        self.walk_phase = (self.walk_phase + travelled / 25.0) % 4.0
+
     def update(self, dt: float) -> None:
         now = time.time()
         self.move_player(dt)
+        self.move_home_player(dt)
         if self.overlay is None:
             # The farm calendar advances only while the player is actually in
             # the world. Closing the game or opening a menu pauses the clock.
@@ -1563,16 +1616,7 @@ class GameApp(WardrobeUI, StorageUI, PurchaseUI):
             return
         elif kind == "home":
             self.save()
-            self.home_edit_mode = False
-            self.selected_furniture = (
-                self.state.furniture_owned[0]
-                if self.state.furniture_owned
-                else None
-            )
-            if self.selected_furniture is not None:
-                layout = self.state.furniture_layout.get(self.selected_furniture)
-                self.home_rotation = int(layout[2]) % 2 if layout else 0
-            self.overlay = "home"
+            self.enter_home()
             return
         elif kind == "fishing":
             self.use_fishing(target["point"])
@@ -1637,6 +1681,104 @@ class GameApp(WardrobeUI, StorageUI, PurchaseUI):
         if ok:
             self.save()
 
+    def enter_home(self) -> None:
+        self.home_edit_mode = False
+        self.home_resting = None
+        self.selected_furniture = (
+            self.state.furniture_owned[0]
+            if self.state.furniture_owned
+            else None
+        )
+        if self.selected_furniture is not None:
+            layout = self.state.furniture_layout.get(self.selected_furniture)
+            self.home_rotation = int(layout[2]) % 2 if layout else 0
+        self.home_player.update(HOME_PLAYER_START)
+        if self._home_collides(*self.home_player):
+            # A previously saved layout may cover the door. Find the nearest
+            # free floor tile so entering the house can never trap the player.
+            for row in range(FURNITURE_GRID_ROWS - 1, -1, -1):
+                found = False
+                for column in range(FURNITURE_GRID_COLUMNS):
+                    point = (
+                        HOME_BUILD_AREA.x + column * HOME_GRID_CELL + HOME_GRID_CELL / 2,
+                        HOME_BUILD_AREA.y + row * HOME_GRID_CELL + HOME_GRID_CELL / 2,
+                    )
+                    if not self._home_collides(*point):
+                        self.home_player.update(point)
+                        found = True
+                        break
+                if found:
+                    break
+        self.direction = "up"
+        self.is_moving = False
+        self.overlay = "home"
+
+    def nearest_home_interaction(self) -> dict | None:
+        if self.overlay != "home" or self.home_edit_mode:
+            return None
+        if self.home_resting:
+            return {"kind": "bed", "key": self.home_resting, "prompt": "침대에서 일어나기"}
+        position = (self.home_player.x, self.home_player.y)
+        candidates: list[tuple[float, dict]] = []
+        door_gap = distance_to_rect(position, HOME_DOOR_RECT)
+        if door_gap <= 55:
+            candidates.append((door_gap, {"kind": "door", "prompt": "농장집 나가기"}))
+        for key, layout in self.state.furniture_layout.items():
+            category = FURNITURE_CATALOG[key][2]
+            if category not in ("bed", "drawer", "wardrobe"):
+                continue
+            rect = self.furniture_grid_rect(key, *layout)
+            gap = distance_to_rect(position, rect)
+            if gap > 52:
+                continue
+            prompt = {
+                "bed": f"{FURNITURE_LABELS[key]}에 눕기",
+                "drawer": f"{FURNITURE_LABELS[key]} 열기",
+                "wardrobe": f"{FURNITURE_LABELS[key]} 열기",
+            }[category]
+            candidates.append((gap, {
+                "kind": category,
+                "key": key,
+                "rect": rect,
+                "prompt": prompt,
+            }))
+        return min(candidates, key=lambda item: item[0])[1] if candidates else None
+
+    def interact_home(self) -> None:
+        target = self.nearest_home_interaction()
+        if target is None:
+            self.notify("침대, 서랍, 옷장이나 출입문에 조금 더 가까이 가세요.", True)
+            return
+        kind = target["kind"]
+        if kind == "door":
+            self.home_resting = None
+            self.is_moving = False
+            self.overlay = None
+            self.save()
+        elif kind == "bed":
+            if self.home_resting:
+                bed_rect = self.home_furniture_rect(str(self.home_resting))
+                self.home_resting = None
+                if bed_rect is not None:
+                    candidates = (
+                        (bed_rect.centerx, bed_rect.bottom + 24),
+                        (bed_rect.right + 24, bed_rect.centery),
+                        (bed_rect.left - 24, bed_rect.centery),
+                    )
+                    for point in candidates:
+                        if not self._home_collides(*point):
+                            self.home_player.update(point)
+                            break
+                self.notify("침대에서 일어났어요.")
+            else:
+                self.home_resting = target["key"]
+                self.is_moving = False
+                self.notify(f"{FURNITURE_LABELS[target['key']]}에 편안히 누웠어요.")
+        elif kind == "drawer":
+            self.open_drawer(target["key"])
+        elif kind == "wardrobe":
+            self.open_wardrobe()
+
     def buy_item(self, key: str) -> None:
         if key == "fishing_rod":
             ok, message = self.state.buy_fishing_rod()
@@ -1695,6 +1837,7 @@ class GameApp(WardrobeUI, StorageUI, PurchaseUI):
         if not self.state.furniture_owned:
             self.notify("배치할 가구를 먼저 구입해 주세요.", True)
             return
+        self.home_resting = None
         self.home_edit_mode = True
         selected = self.selected_furniture
         if selected not in self.state.furniture_owned:
@@ -2010,6 +2153,8 @@ class GameApp(WardrobeUI, StorageUI, PurchaseUI):
                 elif self.overlay == "daily_report":
                     self.close_daily_report()
                 else:
+                    if self.overlay == "home":
+                        self.home_resting = None
                     self.overlay = None
             else:
                 self.running = False
@@ -2091,6 +2236,9 @@ class GameApp(WardrobeUI, StorageUI, PurchaseUI):
                 self.overlay = "shop"
             return
         if self.overlay == "home":
+            if not self.home_edit_mode and self.is_interaction_key(event):
+                self.interact_home()
+                return
             if event.key == pygame.K_v or getattr(event, "scancode", None) == pygame.KSCAN_V:
                 self.open_drawer()
                 return
@@ -2135,8 +2283,6 @@ class GameApp(WardrobeUI, StorageUI, PurchaseUI):
                     self.notify("G를 누르면 선택한 가구를 옮길 수 있어요.")
                 else:
                     self.buy_furniture(key)
-            elif self.is_interaction_key(event):
-                self.overlay = None
             return
         if self.overlay == "blender":
             shortcuts = {
@@ -2288,6 +2434,7 @@ class GameApp(WardrobeUI, StorageUI, PurchaseUI):
                     return
             if HOME_EXIT_BUTTON.collidepoint(position):
                 self.home_edit_mode = False
+                self.home_resting = None
                 self.save()
                 self.overlay = None
                 return
@@ -3595,6 +3742,60 @@ class GameApp(WardrobeUI, StorageUI, PurchaseUI):
                                 (x, y - round(55 * scale),
                                  round(34 * scale), round(23 * scale)))
 
+    def draw_home_character(self) -> None:
+        if self.home_resting:
+            bed_rect = self.home_furniture_rect(str(self.home_resting))
+            if bed_rect is None:
+                self.home_resting = None
+                return
+            frame = self.player_frames.get("right", [None])[0] if self.player_frames else None
+            if frame is not None:
+                lying = pygame.transform.rotate(frame, 90)
+                max_width = max(30, bed_rect.width - 20)
+                max_height = max(24, bed_rect.height - 18)
+                scale = min(max_width / lying.get_width(), max_height / lying.get_height(), 1.0)
+                if scale < 1.0:
+                    lying = pygame.transform.smoothscale(
+                        lying,
+                        (max(1, round(lying.get_width() * scale)),
+                         max(1, round(lying.get_height() * scale))),
+                    )
+                self.screen.blit(lying, lying.get_rect(center=bed_rect.center))
+                blanket = pygame.Rect(
+                    bed_rect.centerx - 2,
+                    bed_rect.centery - min(28, bed_rect.height // 3),
+                    min(58, bed_rect.right - bed_rect.centerx - 8),
+                    min(56, bed_rect.height * 2 // 3),
+                )
+                pygame.draw.rect(self.screen, (126, 92, 173), blanket, border_radius=7)
+                pygame.draw.rect(self.screen, BLUEBERRY_DARK, blanket, 3, border_radius=7)
+            return
+
+        x, y = round(self.home_player.x), round(self.home_player.y)
+        pygame.draw.ellipse(self.screen, (116, 82, 55), (x - 20, y - 6, 40, 9))
+        if self.player_frames:
+            frame = self.player_frames[self.direction][0]
+            bob = 0
+            if self.is_moving:
+                phase = self.walk_phase / 4.0
+                frame_index = int(phase * WALK_FRAME_COUNT) % WALK_FRAME_COUNT
+                frame = self.player_walk_frames[self.direction][frame_index]
+                bob = -round(abs(math.sin(phase * math.tau)) * 1.3)
+            self.screen.blit(frame, frame.get_rect(midbottom=(x, y + 2 + bob)))
+
+    def draw_home_prompt(self) -> None:
+        if self.home_edit_mode:
+            return
+        target = self.nearest_home_interaction()
+        prompt = target["prompt"] if target else "WASD로 집 안을 걸어 다녀 보세요"
+        width = min(520, max(300, self.text_width(prompt, 15) + 72))
+        rect = pygame.Rect((SCREEN_W - width) // 2, 486, width, 48)
+        rounded_rect(self.screen, rect, (255, 235, 184), 9, WOOD_DARK, 3)
+        key = pygame.Rect(rect.x + 9, rect.y + 7, 34, 34)
+        rounded_rect(self.screen, key, BLUEBERRY, 6, BLUEBERRY_DARK, 2)
+        self.text("E" if target else "↕", 16, WHITE, key.centerx, key.centery, center=True)
+        self.text(prompt, 15, INK, rect.x + 54, rect.y + 14)
+
     def draw_home_overlay(self) -> None:
         self.draw_screen_shade((31, 26, 39, 178))
         room = pygame.Rect(45, 30, 1190, 660)
@@ -3612,7 +3813,7 @@ class GameApp(WardrobeUI, StorageUI, PurchaseUI):
         subtitle = (
             "보관함에서 가구 선택 → 바닥 클릭 · 초록색이면 배치 가능"
             if self.home_edit_mode
-            else f"가구를 구입한 뒤 G로 꾸미기 · 보유 {self.state.money:,}벨리"
+            else f"WASD로 걷기 · 가까이서 E로 사용 · 보유 {self.state.money:,}벨리"
         )
         self.text(subtitle, 14, MUTED, 80, 91)
         rounded_rect(self.screen, HOME_DRAWER_BUTTON, BLUEBERRY, 7, WOOD_DARK, 2)
@@ -3665,6 +3866,13 @@ class GameApp(WardrobeUI, StorageUI, PurchaseUI):
                 strip.bottomright,
                 2,
             )
+        pygame.draw.rect(self.screen, WOOD_DARK, HOME_DOOR_RECT.inflate(6, 5), border_radius=4)
+        pygame.draw.rect(self.screen, (119, 70, 45), HOME_DOOR_RECT, border_radius=3)
+        pygame.draw.rect(
+            self.screen,
+            (239, 188, 83),
+            (HOME_DOOR_RECT.right - 13, HOME_DOOR_RECT.centery - 3, 6, 6),
+        )
         if self.home_edit_mode:
             for column in range(FURNITURE_GRID_COLUMNS + 1):
                 x = HOME_BUILD_AREA.x + column * HOME_GRID_CELL
@@ -3698,6 +3906,9 @@ class GameApp(WardrobeUI, StorageUI, PurchaseUI):
                 rotation=layout[2],
                 fit_rect=furniture_rect,
             )
+
+        if not self.home_edit_mode:
+            self.draw_home_character()
 
         if self.home_edit_mode and self.selected_furniture is not None:
             mouse_x, mouse_y = pygame.mouse.get_pos()
@@ -3753,13 +3964,7 @@ class GameApp(WardrobeUI, StorageUI, PurchaseUI):
                 rounded_rect(self.screen, rect, (136, 102, 166), 8, WOOD_DARK, 3)
                 self.text(label, 14, WHITE, rect.centerx, rect.centery, center=True)
         else:
-            self.text(
-                "한 종류당 하나씩 구입할 수 있고, 배치한 위치와 방향은 자동 저장됩니다.",
-                14,
-                MUTED,
-                82,
-                503,
-            )
+            self.draw_home_prompt()
 
         self.text("종류 탭 / PgUp·PgDn 이동 · 1~5 선택·구입", 13, MUTED, 80, 129)
         for index, key in enumerate(FURNITURE_CATEGORIES[self.home_category]):
@@ -4306,7 +4511,7 @@ class GameApp(WardrobeUI, StorageUI, PurchaseUI):
             ("이동·메뉴", "WASD · B 가방 · H 도움말", "한글 입력 상태에서도 물리 키로 메뉴를 열 수 있어요."),
             ("농사·비료", "밭 E · 자랄 때 F", "수확 뒤 60초 재성장, 비료를 주면 유기농 열매를 얻어요."),
             ("낚시", "상점 낚싯대 → 연못 E", "입질 뒤 초록 구간에서 E! 너무 빠르거나 늦으면 놓쳐요."),
-            ("집·가구", "농장집 문 앞 E", "집에 들어가 침대·서랍·책상·랜턴·화분을 구입해 꾸며요."),
+            ("집·가구", "문 앞 E · 실내 WASD", "침대에 눕고 서랍·옷장은 가까이에서 E로 열어요."),
             ("제조·판매", "블렌더 E → +/- · 5/6", "주문 재료를 맞추면 3초 동안 소리와 함께 직접 갈아요."),
             ("낮·밤·가로등", "하루 24분 · 부지 E", "구매한 가로등은 가까이에서 E로 끄고 켤 수 있어요."),
         ]

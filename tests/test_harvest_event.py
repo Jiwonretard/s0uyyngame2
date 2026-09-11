@@ -928,6 +928,37 @@ class HarvestEventTests(unittest.TestCase):
         self.assertTrue(self.app.state.lantern_is_on("lantern"))
         self.assertTrue(GameState.load(main.SAVE_PATH).lantern_is_on("lantern"))
 
+    def test_farmhouse_interior_darkens_at_night_and_lantern_lights_it(self):
+        floor_point = (main.HOME_BUILD_AREA.left + 24, main.HOME_BUILD_AREA.top + 24)
+        self.app.overlay = "home"
+        self.app.state.furniture_layout = {}
+
+        self.app.state.game_elapsed_seconds = main.DAY_SECONDS * 0.25
+        self.app.screen.fill((0, 0, 0))
+        self.app.draw_home_overlay()
+        day_pixel = sum(self.app.screen.get_at(floor_point)[:3])
+
+        self.app.state.game_elapsed_seconds = main.DAY_SECONDS * 0.75
+        self.app.screen.fill((0, 0, 0))
+        self.app.draw_home_overlay()
+        night_pixel = sum(self.app.screen.get_at(floor_point)[:3])
+        self.assertLess(night_pixel, day_pixel)
+
+        self.app.state.furniture_owned = ["lantern"]
+        self.app.state.furniture_layout = {"lantern": [12, 2, 0]}
+        lantern = self.app.home_furniture_rect("lantern")
+        light_point = (lantern.centerx + 60, lantern.centery)
+        self.app.state.lantern_switches = {"lantern": False}
+        self.app.screen.fill((0, 0, 0))
+        self.app.draw_home_overlay()
+        lamp_off_pixel = sum(self.app.screen.get_at(light_point)[:3])
+
+        self.app.state.lantern_switches["lantern"] = True
+        self.app.screen.fill((0, 0, 0))
+        self.app.draw_home_overlay()
+        lamp_on_pixel = sum(self.app.screen.get_at(light_point)[:3])
+        self.assertGreater(lamp_on_pixel, lamp_off_pixel)
+
     def test_new_furniture_tabs_support_click_purchase_and_edit_selection(self):
         self.app.overlay = "home"
         self.app.state.money = 10000

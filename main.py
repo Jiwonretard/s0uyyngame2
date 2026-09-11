@@ -639,6 +639,7 @@ class GameApp(WardrobeUI, StorageUI, PurchaseUI):
         self._home_lamp_off = pygame.Surface((88, 88), pygame.SRCALPHA)
         pygame.draw.circle(self._home_lamp_off, (39, 43, 64, 42), (44, 44), 42)
         pygame.draw.circle(self._home_lamp_off, (43, 46, 61, 82), (44, 44), 17)
+        self._home_lighting_overlay = pygame.Surface(HOME_BUILD_AREA.size, pygame.SRCALPHA)
         self._stars_overlay = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
         self._sun_halo = pygame.Surface((112, 112), pygame.SRCALPHA)
         pygame.draw.circle(self._sun_halo, (255, 203, 73, 18), (56, 56), 52)
@@ -3863,6 +3864,33 @@ class GameApp(WardrobeUI, StorageUI, PurchaseUI):
                     self._home_lamp_off.get_rect(center=rect.center),
                 )
 
+    def draw_home_lighting(self) -> None:
+        """Darken the walkable room with the outdoor day/night cycle."""
+        _day, _hour, _minute, phase = self.game_clock()
+        red, green, blue, alpha = lighting_color_for_phase(phase)
+        indoor_alpha = min(180, round(alpha * 1.2))
+        if indoor_alpha <= 0:
+            return
+
+        overlay = self._home_lighting_overlay
+        overlay.fill((red, green, blue, indoor_alpha))
+        for key in FURNITURE_CATEGORIES["lantern"]:
+            rect = self.home_furniture_rect(key)
+            if rect is None or not self.state.lantern_is_on(key):
+                continue
+            center = (
+                rect.centerx - HOME_BUILD_AREA.x,
+                rect.centery - HOME_BUILD_AREA.y,
+            )
+            for radius, strength in ((125, 0.72), (82, 0.34), (42, 0.06)):
+                pygame.draw.circle(
+                    overlay,
+                    (red, green, blue, round(indoor_alpha * strength)),
+                    center,
+                    radius,
+                )
+        self.screen.blit(overlay, HOME_BUILD_AREA.topleft)
+
     def draw_home_prompt(self) -> None:
         if self.home_edit_mode:
             return
@@ -3988,10 +4016,9 @@ class GameApp(WardrobeUI, StorageUI, PurchaseUI):
             )
 
         if not self.home_edit_mode:
-            self.draw_home_lantern_lighting()
-
-        if not self.home_edit_mode:
             self.draw_home_character()
+            self.draw_home_lighting()
+            self.draw_home_lantern_lighting()
 
         if self.home_edit_mode and self.selected_furniture is not None:
             mouse_x, mouse_y = pygame.mouse.get_pos()

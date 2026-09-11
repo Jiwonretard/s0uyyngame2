@@ -4289,7 +4289,6 @@ class GameApp(WardrobeUI, StorageUI, PurchaseUI):
         self.draw_action_effects()
         self.draw_hud()
         self.draw_prompt(interaction_target)
-        self.draw_toast()
         if self.overlay == "market":
             self.draw_market_overlay()
         elif self.overlay == "shop":
@@ -4314,6 +4313,8 @@ class GameApp(WardrobeUI, StorageUI, PurchaseUI):
             self.draw_bag_overlay()
         elif self.overlay == "help":
             self.draw_help_overlay()
+        # Purchase results must stay visible above the shop/home panels.
+        self.draw_toast()
         if self.pending_purchase is not None:
             self.draw_purchase_confirmation()
         pygame.display.flip()

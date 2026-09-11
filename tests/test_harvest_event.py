@@ -660,6 +660,54 @@ class HarvestEventTests(unittest.TestCase):
         self.app.blender_channel.play.assert_called_once_with(self.app.blender_sound)
         self.assertLessEqual(self.app.current_bgm_volume, main.BGM_DUCK_VOLUME)
 
+    def test_shop_rod_click_and_shortcut_work_with_rod_in_drawer(self):
+        rod_rect = next(rect for rect, key, *_ in self.app.shop_buttons if key == 'fishing_rod')
+        for method in ('click', 'shortcut'):
+            with self.subTest(method=method):
+                self.app.state = GameState.new(now=100)
+                self.app.state.money = main.FISHING_ROD_COST
+                self.app.state.drawer_contents = {'drawer': {'fishing_rod': 1}}
+                self.app.state.drawer_rod_durability = {'drawer': 17}
+                self.app.overlay = 'shop'
+                if method == 'click':
+                    self.app.handle_click(rod_rect.center)
+                else:
+                    self.app.handle_key(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_6, mod=0))
+                self.assertEqual(self.app.state.money, 0)
+                self.assertEqual(self.app.state.fishing_rod, 1)
+                self.assertEqual(self.app.state.fishing_rod_durability, 40)
+                self.assertEqual(self.app.state.drawer_rod_durability['drawer'], 17)
+                self.assertFalse(self.app.toast_error)
+                self.assertEqual(GameState.load(main.SAVE_PATH).fishing_rod, 1)
+
+    def test_shop_purchase_failures_are_visible_above_shop(self):
+        from game_state import BAG_ITEM_KEYS, BAG_STACK_SIZE, BAG_SLOT_COUNT
+        rod_rect = next(rect for rect, key, *_ in self.app.shop_buttons if key == 'fishing_rod')
+        for condition, expected in (('money', '벨리'), ('full_bag', '한 칸'), ('owned', '이미')):
+            with self.subTest(condition=condition):
+                self.app.state = GameState.new(now=100)
+                for key in BAG_ITEM_KEYS:
+                    setattr(self.app.state, key, 0)
+                self.app.state.money = main.FISHING_ROD_COST
+                if condition == 'money':
+                    self.app.state.money -= 1
+                elif condition == 'full_bag':
+                    self.app.state.blueberries = BAG_STACK_SIZE * BAG_SLOT_COUNT
+                else:
+                    self.app.state.fishing_rod = 1
+                    self.app.state.fishing_rod_durability = 12
+                self.app.overlay = 'shop'
+                before = self.app.state.to_dict()
+                self.app.handle_click(rod_rect.center)
+                self.assertTrue(self.app.toast_error)
+                self.assertIn(expected, self.app.toast)
+                self.assertEqual(self.app.state.to_dict(), before)
+                order = []
+                with patch.object(self.app, 'draw_shop_overlay', side_effect=lambda: order.append('shop')), \
+                     patch.object(self.app, 'draw_toast', side_effect=lambda: order.append('toast')):
+                    self.app.draw()
+                self.assertEqual(order, ['shop', 'toast'])
+
     def test_fishing_cast_bite_catch_and_shop_sale_flow(self):
         self.app.state.money = main.FISHING_ROD_COST
         self.app.buy_item("fishing_rod")

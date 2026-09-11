@@ -58,7 +58,6 @@ class DrawerTests(unittest.TestCase):
         self.assertTrue(state.transfer_drawer("drawer", "fishing_rod", 1, deposit=True)[0])
         self.assertTrue(state.transfer_drawer("drawer", "premium_honey", 7, deposit=True)[0])
         self.assertEqual((state.fishing_rod, state.fishing_rod_durability), (0, 0))
-        self.assertFalse(state.buy_fishing_rod()[0])
         state.store_furniture("drawer")
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "save.json"
@@ -76,3 +75,28 @@ class DrawerTests(unittest.TestCase):
             data.pop("drawer_rod_durability")
             path.write_text(json.dumps(data))
             self.assertEqual(GameState.load(path).drawer_contents, {})
+
+    def test_buying_spare_rod_preserves_stored_rod_and_durability(self):
+        state = self.ready()
+        state.fishing_rod, state.fishing_rod_durability = 1, 17
+        state.transfer_drawer('drawer', 'fishing_rod', 1, deposit=True)
+        state.money = 2000
+        self.assertTrue(state.buy_fishing_rod()[0])
+        self.assertEqual(state.money, 0)
+        self.assertEqual((state.fishing_rod, state.fishing_rod_durability), (1, 40))
+        self.assertEqual(state.drawer_contents['drawer']['fishing_rod'], 1)
+        self.assertEqual(state.drawer_rod_durability['drawer'], 17)
+        before = state.to_dict()
+        self.assertFalse(state.buy_fishing_rod()[0])
+        self.assertFalse(state.transfer_drawer('drawer', 'fishing_rod', 1, deposit=False)[0])
+        self.assertEqual(state.to_dict(), before)
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'save.json'
+            state.save(path)
+            loaded = GameState.load(path, now=101)
+            self.assertEqual(loaded.fishing_rod_durability, 40)
+            self.assertEqual(loaded.drawer_rod_durability['drawer'], 17)
+            loaded.transfer_drawer('drawer_white', 'fishing_rod', 1, deposit=True)
+            self.assertTrue(loaded.transfer_drawer('drawer', 'fishing_rod', 1, deposit=False)[0])
+            self.assertEqual(loaded.fishing_rod_durability, 17)
+            self.assertEqual(loaded.drawer_rod_durability['drawer_white'], 40)

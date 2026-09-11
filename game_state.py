@@ -1128,8 +1128,8 @@ class GameState:
         return True, f"{ITEM_LABELS[key]} 1개를 샀어요."
 
     def buy_fishing_rod(self) -> tuple[bool, str]:
-        if any(contents.get("fishing_rod", 0) for contents in self.drawer_contents.values()):
-            return False, "서랍에 보관한 낚싯대가 있어요. 집에서 꺼내 주세요."
+        # Stored rods have their own durability; only a rod in the bag blocks
+        # buying another carried rod. Never replace a stored rod on purchase.
         if self.fishing_rod:
             return False, "이미 낚싯대를 가지고 있어요."
         if self.money < FISHING_ROD_COST:

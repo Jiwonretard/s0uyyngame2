@@ -400,6 +400,7 @@ class GameStateTests(unittest.TestCase):
         state.blueberries = 14
         starting_money = state.money
         price = state.raw_blueberry_price()
+        self.assertEqual(price, 2)
 
         ok, message = state.sell_blueberry_batch("blueberries", 10)
         self.assertTrue(ok)

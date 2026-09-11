@@ -725,8 +725,8 @@ class HarvestEventTests(unittest.TestCase):
             self.app.state.fishing_rod_durability,
             main.FISHING_ROD_MAX_DURABILITY - 1,
         )
-        self.app.fishing_phase = "bite"
-        self.app.interact()
+        with patch("main.time.time", return_value=self.app.fishing_bite_at + 0.6):
+            self.app.interact()
 
         self.assertEqual(self.app.fishing_phase, "idle")
         self.assertEqual(self.app.state.carp, 1)
@@ -757,8 +757,8 @@ class HarvestEventTests(unittest.TestCase):
         self.assertEqual(self.app.state.fishing_rod, 0)
         self.assertEqual(self.app.state.fishing_rod_durability, 0)
 
-        self.app.fishing_phase = "bite"
-        self.app.interact()
+        with patch("main.time.time", return_value=self.app.fishing_bite_at + 0.6):
+            self.app.interact()
 
         self.assertEqual(self.app.fishing_phase, "idle")
         self.assertEqual(self.app.state.carp, 1)

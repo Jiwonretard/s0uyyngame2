@@ -104,6 +104,8 @@ BGM_VOLUME_CHANGE_SPEED = 2.8
 FISHING_MIN_WAIT = 3.0
 FISHING_MAX_WAIT = 7.0
 FISHING_BITE_SECONDS = 1.5
+FISHING_HOOK_START = 0.25
+FISHING_HOOK_END = 1.10
 GAME_START_MINUTES = 6 * 60
 GAME_CLOCK_MINUTES = 24 * 60
 RAIN_DROP_COUNT = 72
@@ -1270,13 +1272,8 @@ class GameApp(WardrobeUI, StorageUI, PurchaseUI):
             for index, timer in self.tree_shake_timers.items()
             if timer - dt > 0
         }
-        if self.overlay is None and self.fishing_phase == "waiting" and now >= self.fishing_bite_at:
-            self.fishing_phase = "bite"
-            self.fishing_escape_at = now + FISHING_BITE_SECONDS
-            self.notify("입질이 왔어요! 연못가에서 E를 눌러 낚아 올리세요!")
-        elif self.overlay is None and self.fishing_phase == "bite" and now > self.fishing_escape_at:
-            self.fishing_phase = "idle"
-            self.notify("물고기가 미끼를 물고 달아났어요. 다시 던져 보세요.", True)
+        if self.overlay is None:
+            self.update_fishing_bite(now)
         if self.state.customers_waiting < CUSTOMER_QUEUE_SIZE and now >= self.next_customer_at:
             was_empty = self.state.customers_waiting == 0
             self.state.add_customer()
@@ -1469,7 +1466,7 @@ class GameApp(WardrobeUI, StorageUI, PurchaseUI):
                 max(POND.top, min(position[1], POND.bottom)),
             )
             if self.fishing_phase == "bite":
-                fishing_prompt = "입질! 지금 E로 낚아 올리기"
+                fishing_prompt = "입질! 초록 구간에서 E로 낚아 올리기"
             elif self.fishing_phase == "waiting":
                 fishing_prompt = "찌를 지켜보는 중 · 입질을 기다리세요"
             elif not self.state.fishing_rod:
@@ -1799,11 +1796,40 @@ class GameApp(WardrobeUI, StorageUI, PurchaseUI):
             )
             self.save()
 
+    def miss_fishing(self, message: str) -> None:
+        self.fishing_phase = "idle"
+        self.notify(message, True)
+        self.spawn_particles(self.fishing_bobber, WATER_LIGHT, 10)
+        self.action_effects.append(ActionEffect(
+            self.fishing_bobber[0], self.fishing_bobber[1] - 42, "놓쳤어요!", RED
+        ))
+
+    def update_fishing_bite(self, now: float) -> None:
+        if self.fishing_phase not in ("waiting", "bite") or now < self.fishing_bite_at:
+            return
+        # Input and rendering share the scheduled deadline; low FPS must not
+        # extend the catch window or allow a late keypress to catch a fish.
+        self.fishing_escape_at = self.fishing_bite_at + FISHING_BITE_SECONDS
+        if now >= self.fishing_escape_at:
+            self.miss_fishing("너무 늦었어요! 물고기가 미끼를 놓고 달아났어요.")
+        elif self.fishing_phase == "waiting":
+            self.fishing_phase = "bite"
+            self.spawn_particles(self.fishing_bobber, WATER_LIGHT, 28)
+            self.action_effects.append(ActionEffect(
+                self.fishing_bobber[0], self.fishing_bobber[1] - 110, "물었다!", GOLD,
+                life=0.45, duration=0.45
+            ))
+            self.notify("입질! 찌 위 표시가 초록 구간에 있을 때 E를 누르세요!")
+
     def use_fishing(self, pond_edge: tuple[float, float]) -> None:
         if self.fishing_phase == "idle" and not self.state.fishing_rod:
             self.notify("낚싯대가 없어요. 상점에서 2,000벨리에 구입하세요.", True)
             return
         now = time.time()
+        if self.fishing_phase != "idle":
+            self.update_fishing_bite(now)
+            if self.fishing_phase == "idle":
+                return
         if self.fishing_phase == "idle":
             ok, durability_message, broke = self.state.use_fishing_rod()
             if not ok:
@@ -1823,18 +1849,24 @@ class GameApp(WardrobeUI, StorageUI, PurchaseUI):
                 wait *= 0.7
             self.fishing_phase = "waiting"
             self.fishing_bite_at = now + wait
+            self.fishing_escape_at = self.fishing_bite_at + FISHING_BITE_SECONDS
             if broke:
                 self.notify("마지막 찌를 던졌고 낚싯대가 부서졌어요. 이번 입질은 잡을 수 있어요!", True)
             else:
                 self.notify(
-                    "찌를 던졌어요. 물속으로 잠길 때 E를 누르세요. · "
+                    "찌를 던졌어요. 입질 뒤 초록 구간에서 E! · "
                     + durability_message
                 )
             self.save()
             return
         if self.fishing_phase == "waiting":
-            self.fishing_phase = "idle"
-            self.notify("너무 일찍 감았어요. 물고기가 다가올 때까지 기다리세요.", True)
+            self.miss_fishing("너무 일찍 감았어요. 물고기가 다가올 때까지 기다리세요.")
+            return
+        if now < self.fishing_bite_at + FISHING_HOOK_START:
+            self.miss_fishing("너무 빨랐어요! 미끼를 완전히 물기 전에 감아 놓쳤어요.")
+            return
+        if now > self.fishing_bite_at + FISHING_HOOK_END:
+            self.miss_fishing("너무 늦었어요! 물고기가 미끼를 놓고 달아났어요.")
             return
 
         ok, message, fish_key = self.state.catch_fish(
@@ -1844,6 +1876,9 @@ class GameApp(WardrobeUI, StorageUI, PurchaseUI):
         self.fishing_phase = "idle"
         self.notify(message, not ok)
         if ok and fish_key is not None:
+            self.action_effects.append(ActionEffect(
+                self.fishing_bobber[0], self.fishing_bobber[1] - 50, "타이밍 성공!", GREEN_DARK
+            ))
             self.tree_drops.append(
                 TreeDrop(self.fishing_bobber[0], self.fishing_bobber[1] - 12, fish_key, 1)
             )
@@ -1943,6 +1978,9 @@ class GameApp(WardrobeUI, StorageUI, PurchaseUI):
         )
 
     def handle_key(self, event: pygame.event.Event) -> None:
+        if (getattr(event, "repeat", False) and self.fishing_phase != "idle"
+                and self.is_interaction_key(event)):
+            return
         if self.pending_purchase is not None:
             self.handle_purchase_key(event)
             return
@@ -2380,18 +2418,51 @@ class GameApp(WardrobeUI, StorageUI, PurchaseUI):
         if self.fishing_phase == "idle":
             return
         hand = self.world_to_screen((self.player.x + 10, self.player.y - 48))
-        bobber_x, bobber_y = self.world_to_screen(self.fishing_bobber)
-        if self.fishing_phase == "bite":
-            bobber_y += 8
-        pygame.draw.line(self.screen, (235, 231, 215), hand, (bobber_x, bobber_y), 2)
+        water_x, water_y = self.world_to_screen(self.fishing_bobber)
+        biting = self.fishing_phase == "bite"
+        elapsed = max(0.0, self.frame_time - self.fishing_bite_at)
+        if biting:
+            # Sharp initial dive, then repeated lateral tugs and submerging.
+            bobber_x = water_x + round(math.sin(elapsed * 29) * 9)
+            bobber_y = water_y + round(5 + abs(math.sin(elapsed * 18)) * 12)
+            bend = round(math.sin(elapsed * 22) * 12)
+            midpoint = ((hand[0] + bobber_x) // 2 + bend, (hand[1] + bobber_y) // 2 - 8)
+            pygame.draw.lines(self.screen, (235, 231, 215), False, [hand, midpoint, (bobber_x, bobber_y)], 2)
+            for index in range(3):
+                pulse = (elapsed * 1.7 + index / 3) % 1
+                radius = round(12 + pulse * 34)
+                pygame.draw.ellipse(self.screen, WHITE if index == 0 else WATER_LIGHT,
+                                    (water_x - radius, water_y - radius // 3,
+                                     radius * 2, max(6, radius * 2 // 3)), 2)
+            for index in range(8):
+                flight = (elapsed * 2.2 + index * 0.13) % 1
+                angle = math.tau * index / 8
+                dx = math.cos(angle) * (8 + flight * 31)
+                dy = math.sin(angle) * flight * 13 - math.sin(flight * math.pi) * 27
+                pygame.draw.rect(self.screen, WHITE if index % 2 else WATER_LIGHT,
+                                 (round(water_x + dx), round(water_y + dy), 3, 5))
+        else:
+            bobber_x, bobber_y = water_x, water_y + round(math.sin(self.frame_time * 3) * 2)
+            pygame.draw.line(self.screen, (235, 231, 215), hand, (bobber_x, bobber_y), 2)
+            pygame.draw.ellipse(self.screen, WATER_LIGHT, (bobber_x - 11, bobber_y + 4, 22, 6), 2)
         pygame.draw.circle(self.screen, WOOD_DARK, (bobber_x, bobber_y), 7)
         pygame.draw.rect(self.screen, WHITE, (bobber_x - 4, bobber_y - 5, 8, 5))
-        pygame.draw.rect(self.screen, RED, (bobber_x - 4, bobber_y, 8, 5))
-        ripple = 18 if self.fishing_phase == "bite" else 11
-        pygame.draw.ellipse(
-            self.screen, WATER_LIGHT,
-            (bobber_x - ripple, bobber_y + 4, ripple * 2, max(5, ripple // 2)), 2,
-        )
+        pygame.draw.rect(self.screen, RED, (bobber_x - 4, bobber_y, 8, 2 if biting else 5))
+        if biting:
+            # The moving cursor uses exactly the same elapsed time as E input.
+            bar = pygame.Rect(water_x - 54, water_y - 47, 108, 10)
+            pygame.draw.rect(self.screen, WOOD_DARK, bar.inflate(6, 6))
+            pygame.draw.rect(self.screen, RED, bar)
+            start = round(bar.width * FISHING_HOOK_START / FISHING_BITE_SECONDS)
+            end = round(bar.width * FISHING_HOOK_END / FISHING_BITE_SECONDS)
+            pygame.draw.rect(self.screen, LEAF, (bar.x + start, bar.y, end - start, bar.height))
+            cursor = bar.x + round(bar.width * min(1.0, elapsed / FISHING_BITE_SECONDS))
+            pygame.draw.rect(self.screen, WHITE, (cursor - 2, bar.y - 4, 4, bar.height + 8))
+            label = ("기다려요" if elapsed < FISHING_HOOK_START else
+                     "E 지금!" if elapsed <= FISHING_HOOK_END else "늦었어요")
+            cue = pygame.Rect(water_x - 49, water_y - 76, 98, 22)
+            pygame.draw.rect(self.screen, CREAM, cue)
+            self.text(label, 15, BLUEBERRY_DARK, cue.centerx, cue.centery, center=True)
 
     def draw_house(self, world_rect: pygame.Rect, title: str, wall: tuple[int, int, int],
                    roof: tuple[int, int, int], door_x: int | None = None,
@@ -4252,7 +4323,7 @@ class GameApp(WardrobeUI, StorageUI, PurchaseUI):
         rows = [
             ("이동·메뉴", "WASD · B 가방 · H 도움말", "한글 입력 상태에서도 물리 키로 메뉴를 열 수 있어요."),
             ("농사·비료", "밭 E · 자랄 때 F", "수확 뒤 60초 재성장, 비료를 주면 유기농 열매를 얻어요."),
-            ("낚시", "상점 낚싯대 → 연못 E", "찌를 던질 때 내구도 1이 줄고 40번째 사용 뒤 부서져요."),
+            ("낚시", "상점 낚싯대 → 연못 E", "입질 뒤 초록 구간에서 E! 너무 빠르거나 늦으면 놓쳐요."),
             ("집·가구", "농장집 문 앞 E", "집에 들어가 침대·서랍·책상·랜턴·화분을 구입해 꾸며요."),
             ("제조·판매", "블렌더 E → +/- · 5/6", "주문 재료를 맞추면 3초 동안 소리와 함께 직접 갈아요."),
             ("낮·밤·가로등", "하루 24분 · 부지 E", "지정된 7곳의 가로등은 저녁부터 새벽까지 자동으로 켜져요."),

@@ -629,6 +629,13 @@ class GameApp(WardrobeUI, StorageUI, PurchaseUI):
         pygame.draw.circle(self._lamp_glow, (255, 195, 80, 12), (75, 75), 70)
         pygame.draw.circle(self._lamp_glow, (255, 218, 118, 24), (75, 75), 39)
         pygame.draw.circle(self._lamp_glow, (255, 240, 177, 62), (75, 75), 12)
+        self._home_lamp_glow = pygame.Surface((230, 230), pygame.SRCALPHA)
+        pygame.draw.circle(self._home_lamp_glow, (255, 202, 77, 18), (115, 115), 108)
+        pygame.draw.circle(self._home_lamp_glow, (255, 220, 112, 34), (115, 115), 72)
+        pygame.draw.circle(self._home_lamp_glow, (255, 241, 174, 72), (115, 115), 30)
+        self._home_lamp_off = pygame.Surface((88, 88), pygame.SRCALPHA)
+        pygame.draw.circle(self._home_lamp_off, (39, 43, 64, 42), (44, 44), 42)
+        pygame.draw.circle(self._home_lamp_off, (43, 46, 61, 82), (44, 44), 17)
         self._stars_overlay = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
         self._sun_halo = pygame.Surface((112, 112), pygame.SRCALPHA)
         pygame.draw.circle(self._sun_halo, (255, 203, 73, 18), (56, 56), 52)
@@ -1725,7 +1732,7 @@ class GameApp(WardrobeUI, StorageUI, PurchaseUI):
             candidates.append((door_gap, {"kind": "door", "prompt": "농장집 나가기"}))
         for key, layout in self.state.furniture_layout.items():
             category = FURNITURE_CATALOG[key][2]
-            if category not in ("bed", "drawer", "wardrobe"):
+            if category not in ("bed", "drawer", "wardrobe", "lantern"):
                 continue
             rect = self.furniture_grid_rect(key, *layout)
             gap = distance_to_rect(position, rect)
@@ -1735,6 +1742,11 @@ class GameApp(WardrobeUI, StorageUI, PurchaseUI):
                 "bed": f"{FURNITURE_LABELS[key]}에 눕기",
                 "drawer": f"{FURNITURE_LABELS[key]} 열기",
                 "wardrobe": f"{FURNITURE_LABELS[key]} 열기",
+                "lantern": (
+                    f"{FURNITURE_LABELS[key]} 불 끄기"
+                    if self.state.lantern_is_on(key)
+                    else f"{FURNITURE_LABELS[key]} 불 켜기"
+                ),
             }[category]
             candidates.append((gap, {
                 "kind": category,
@@ -1778,6 +1790,11 @@ class GameApp(WardrobeUI, StorageUI, PurchaseUI):
             self.open_drawer(target["key"])
         elif kind == "wardrobe":
             self.open_wardrobe()
+        elif kind == "lantern":
+            ok, message = self.state.toggle_lantern(target["key"])
+            self.notify(message, not ok)
+            if ok:
+                self.save()
 
     def buy_item(self, key: str) -> None:
         if key == "fishing_rod":
@@ -3783,6 +3800,23 @@ class GameApp(WardrobeUI, StorageUI, PurchaseUI):
                 bob = -round(abs(math.sin(phase * math.tau)) * 1.3)
             self.screen.blit(frame, frame.get_rect(midbottom=(x, y + 2 + bob)))
 
+    def draw_home_lantern_lighting(self) -> None:
+        for key in FURNITURE_CATEGORIES["lantern"]:
+            rect = self.home_furniture_rect(key)
+            if rect is None:
+                continue
+            if self.state.lantern_is_on(key):
+                self.screen.blit(
+                    self._home_lamp_glow,
+                    self._home_lamp_glow.get_rect(center=rect.center),
+                )
+                pygame.draw.circle(self.screen, (255, 236, 146), rect.center, 5)
+            else:
+                self.screen.blit(
+                    self._home_lamp_off,
+                    self._home_lamp_off.get_rect(center=rect.center),
+                )
+
     def draw_home_prompt(self) -> None:
         if self.home_edit_mode:
             return
@@ -3906,6 +3940,9 @@ class GameApp(WardrobeUI, StorageUI, PurchaseUI):
                 rotation=layout[2],
                 fit_rect=furniture_rect,
             )
+
+        if not self.home_edit_mode:
+            self.draw_home_lantern_lighting()
 
         if not self.home_edit_mode:
             self.draw_home_character()
@@ -4511,7 +4548,7 @@ class GameApp(WardrobeUI, StorageUI, PurchaseUI):
             ("이동·메뉴", "WASD · B 가방 · H 도움말", "한글 입력 상태에서도 물리 키로 메뉴를 열 수 있어요."),
             ("농사·비료", "밭 E · 자랄 때 F", "수확 뒤 60초 재성장, 비료를 주면 유기농 열매를 얻어요."),
             ("낚시", "상점 낚싯대 → 연못 E", "입질 뒤 초록 구간에서 E! 너무 빠르거나 늦으면 놓쳐요."),
-            ("집·가구", "문 앞 E · 실내 WASD", "침대에 눕고 서랍·옷장은 가까이에서 E로 열어요."),
+            ("집·가구", "문 앞 E · 실내 WASD", "침대·서랍·옷장·랜턴은 가까이에서 E로 사용해요."),
             ("제조·판매", "블렌더 E → +/- · 5/6", "주문 재료를 맞추면 3초 동안 소리와 함께 직접 갈아요."),
             ("낮·밤·가로등", "하루 24분 · 부지 E", "구매한 가로등은 가까이에서 E로 끄고 켤 수 있어요."),
         ]

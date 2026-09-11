@@ -902,6 +902,32 @@ class HarvestEventTests(unittest.TestCase):
         self.app.handle_key(event)
         self.assertIsNone(self.app.overlay)
 
+    def test_placed_lantern_toggles_with_e_and_persists(self):
+        event = pygame.event.Event(
+            pygame.KEYDOWN,
+            key=pygame.K_e,
+            scancode=pygame.KSCAN_E,
+            mod=0,
+        )
+        self.app.state.furniture_owned = ["lantern"]
+        self.app.state.furniture_layout = {"lantern": [12, 2, 0]}
+        self.app.state.lantern_switches = {"lantern": True}
+        self.app.enter_home()
+        lantern = self.app.home_furniture_rect("lantern")
+        self.app.home_player.update(lantern.centerx, lantern.bottom + 25)
+        target = self.app.nearest_home_interaction()
+        self.assertEqual(target["kind"], "lantern")
+        self.assertIn("끄기", target["prompt"])
+
+        self.app.handle_key(event)
+        self.assertFalse(self.app.state.lantern_is_on("lantern"))
+        self.assertIn("켜기", self.app.nearest_home_interaction()["prompt"])
+        self.assertFalse(GameState.load(main.SAVE_PATH).lantern_is_on("lantern"))
+
+        self.app.handle_key(event)
+        self.assertTrue(self.app.state.lantern_is_on("lantern"))
+        self.assertTrue(GameState.load(main.SAVE_PATH).lantern_is_on("lantern"))
+
     def test_new_furniture_tabs_support_click_purchase_and_edit_selection(self):
         self.app.overlay = "home"
         self.app.state.money = 10000

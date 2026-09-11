@@ -485,6 +485,7 @@ class GameState:
     fish_caught: int = 0
     furniture_owned: list[str] = field(default_factory=list)
     furniture_layout: dict[str, list[int]] = field(default_factory=dict)
+    lantern_switches: dict[str, bool] = field(default_factory=dict)
     drawer_contents: dict[str, dict[str, int]] = field(default_factory=dict)
     drawer_rod_durability: dict[str, int] = field(default_factory=dict)
     appearance: dict[str, str] = field(default_factory=dict)
@@ -1207,6 +1208,8 @@ class GameState:
         self.money -= cost
         self.daily_money_spent += cost
         self.furniture_owned.append(key)
+        if key in FURNITURE_CATEGORIES["lantern"]:
+            self.lantern_switches[key] = True
         return True, (
             f"{FURNITURE_LABELS[key]}을(를) 구입해 보관함에 넣었어요. "
             "G를 눌러 배치해 보세요."
@@ -1279,6 +1282,22 @@ class GameState:
             return False, "이 가구는 이미 보관함에 있어요."
         self.furniture_layout.pop(key)
         return True, f"{FURNITURE_LABELS[key]}을(를) 보관함에 넣었어요."
+
+    def lantern_is_on(self, key: str) -> bool:
+        return (
+            key in FURNITURE_CATEGORIES["lantern"]
+            and key in self.furniture_owned
+            and bool(self.lantern_switches.get(key, True))
+        )
+
+    def toggle_lantern(self, key: str) -> tuple[bool, str]:
+        if key not in FURNITURE_CATEGORIES["lantern"]:
+            return False, "이 가구는 랜턴이 아니에요."
+        if key not in self.furniture_owned or key not in self.furniture_layout:
+            return False, "구입한 랜턴을 집 안에 먼저 배치해 주세요."
+        turn_on = not self.lantern_is_on(key)
+        self.lantern_switches[key] = turn_on
+        return True, f"{FURNITURE_LABELS[key]} 불을 {'켰어요' if turn_on else '껐어요'}."
 
     def sell_blueberry_batch(
         self,
@@ -1547,6 +1566,7 @@ class GameState:
             allowed = {field_name for field_name in cls.__dataclass_fields__}
             had_rod_durability = "fishing_rod_durability" in raw
             had_furniture_layout = "furniture_layout" in raw
+            had_lantern_switches = "lantern_switches" in raw
             had_owned_cosmetics = "owned_cosmetics" in raw
             state = cls(**{key: value for key, value in raw.items() if key in allowed})
             state.active_plots = max(STARTING_PLOTS, min(MAX_PLOTS, int(state.active_plots)))
@@ -1622,6 +1642,21 @@ class GameState:
                         row,
                         rotation,
                     ]
+            raw_lantern_switches = (
+                state.lantern_switches
+                if isinstance(state.lantern_switches, dict)
+                else {}
+            )
+            state.lantern_switches = {
+                key: (
+                    raw_lantern_switches[key]
+                    if (had_lantern_switches and key in raw_lantern_switches
+                        and type(raw_lantern_switches[key]) is bool)
+                    else True
+                )
+                for key in FURNITURE_CATEGORIES["lantern"]
+                if key in state.furniture_owned
+            }
             state.golden_blueberries_sold = max(0, int(state.golden_blueberries_sold))
             state.trees_shaken = max(0, int(state.trees_shaken))
             raw_tree_days = state.tree_shaken_days if isinstance(state.tree_shaken_days, dict) else {}

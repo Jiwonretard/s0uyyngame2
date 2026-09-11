@@ -206,6 +206,32 @@ class GameStateTests(unittest.TestCase):
         self.assertEqual(migrated.furniture_owned, legacy["furniture_owned"])
         self.assertEqual(set(migrated.furniture_layout), set(legacy["furniture_owned"]))
 
+    def test_indoor_lantern_switches_are_independent_and_saved(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "lanterns.json"
+            state = GameState.new(now=100.0)
+            keys = ("lantern", "lantern_paper")
+            state.money = sum(FURNITURE_COSTS[key] for key in keys)
+            for index, key in enumerate(keys):
+                self.assertTrue(state.buy_furniture(key)[0])
+                self.assertTrue(state.place_furniture(key, 3 + index * 4, 2)[0])
+                self.assertTrue(state.lantern_is_on(key))
+            money = state.money
+            self.assertTrue(state.toggle_lantern(keys[0])[0])
+            self.assertFalse(state.lantern_is_on(keys[0]))
+            self.assertTrue(state.lantern_is_on(keys[1]))
+            self.assertEqual(state.money, money)
+            state.save(path)
+            loaded = GameState.load(path, now=100.0)
+            self.assertFalse(loaded.lantern_is_on(keys[0]))
+            self.assertTrue(loaded.lantern_is_on(keys[1]))
+
+            legacy = state.to_dict()
+            legacy.pop("lantern_switches")
+            path.write_text(json.dumps(legacy), encoding="utf-8")
+            legacy_loaded = GameState.load(path, now=100.0)
+            self.assertTrue(all(legacy_loaded.lantern_is_on(key) for key in keys))
+
     def test_all_furniture_designs_purchase_place_rotate_and_save(self):
         state = GameState.new(now=100.0)
         state.money = sum(FURNITURE_COSTS.values())

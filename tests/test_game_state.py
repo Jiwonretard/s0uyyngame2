@@ -441,6 +441,49 @@ class GameStateTests(unittest.TestCase):
             starting_money + ORGANIC_BLUEBERRY_PRICE * 6 + GOLDEN_BLUEBERRY_PRICE * 3,
         )
 
+    def test_streetlight_switches_are_independent_free_and_saved(self):
+        state = GameState.new(now=100)
+        state.money = STREETLIGHT_COST * 2
+        state.buy_streetlight(0)
+        state.buy_streetlight(1)
+        money, spent = state.money, state.daily_money_spent
+        self.assertTrue(state.streetlight_is_on(0, night=False))
+        self.assertTrue(state.toggle_streetlight(0, night=True)[0])
+        self.assertFalse(state.streetlight_is_on(0, night=True))
+        self.assertTrue(state.streetlight_is_on(1, night=True))
+        self.assertFalse(state.toggle_streetlight(2, night=True)[0])
+        self.assertFalse(state.toggle_streetlight(-1, night=True)[0])
+        self.assertEqual((state.money, state.daily_money_spent), (money, spent))
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'save.json'
+            state.save(path)
+            loaded = GameState.load(path, now=100)
+            self.assertEqual(loaded.streetlight_switches[:2], [False, True])
+            self.assertTrue(loaded.toggle_streetlight(0, night=False)[0])
+            self.assertTrue(loaded.streetlight_is_on(0, night=False))
+
+    def test_legacy_and_invalid_streetlight_switches_load_safely(self):
+        state = GameState.new(now=100)
+        state.streetlights_installed[0] = True
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'save.json'
+            data = state.to_dict()
+            data.pop('streetlight_switches')
+            path.write_text(json.dumps(data))
+            old = GameState.load(path, now=100)
+            self.assertFalse(old.streetlight_is_on(0, night=False))
+            self.assertTrue(old.streetlight_is_on(0, night=True))
+            old.toggle_streetlight(0, night=True)
+            self.assertFalse(old.streetlight_is_on(0, night=True))
+            for bad in (None, 'invalid', ["false", True], [False]):
+                data['streetlight_switches'] = bad
+                path.write_text(json.dumps(data))
+                loaded = GameState.load(path, now=100)
+                self.assertEqual(len(loaded.streetlight_switches), STREETLIGHT_COUNT)
+                self.assertTrue(loaded.streetlights_installed[0])
+                self.assertTrue(all(v is None or type(v) is bool for v in loaded.streetlight_switches))
+                self.assertFalse(loaded.streetlight_is_on(1, night=True))
+
     def test_streetlights_cost_three_thousand_and_persist(self):
         state = GameState.new(now=100.0)
         self.assertEqual(state.streetlights_installed, [False] * STREETLIGHT_COUNT)

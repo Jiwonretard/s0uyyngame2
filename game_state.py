@@ -499,6 +499,11 @@ class GameState:
     streetlights_installed: list[bool] = field(
         default_factory=lambda: [False] * STREETLIGHT_COUNT
     )
+    # None preserves automatic dusk lighting for older saves. Manual switches
+    # persist independently for each purchased lamp, including through daytime.
+    streetlight_switches: list[bool | None] = field(
+        default_factory=lambda: [None] * STREETLIGHT_COUNT
+    )
 
     @classmethod
     def new(cls, now: float | None = None) -> "GameState":
@@ -1457,7 +1462,21 @@ class GameState:
         self.money -= STREETLIGHT_COST
         self.daily_money_spent += STREETLIGHT_COST
         self.streetlights_installed[index] = True
-        return True, "가로등을 설치했어요! 저녁부터 주변을 환하게 밝혀 줍니다."
+        self.streetlight_switches[index] = True
+        return True, "가로등을 설치하고 켰어요! 가까이에서 E로 끄거나 켤 수 있어요."
+
+    def streetlight_is_on(self, index: int, *, night: bool) -> bool:
+        if not 0 <= index < STREETLIGHT_COUNT or not self.streetlights_installed[index]:
+            return False
+        switch = self.streetlight_switches[index]
+        return night if switch is None else switch
+
+    def toggle_streetlight(self, index: int, *, night: bool) -> tuple[bool, str]:
+        if not 0 <= index < STREETLIGHT_COUNT or not self.streetlights_installed[index]:
+            return False, "먼저 가로등을 구입해 설치해 주세요."
+        turn_on = not self.streetlight_is_on(index, night=night)
+        self.streetlight_switches[index] = turn_on
+        return True, "가로등을 켰어요." if turn_on else "가로등을 껐어요."
 
     def to_dict(self) -> dict:
         data = asdict(self)
@@ -1653,14 +1672,24 @@ class GameState:
                 if isinstance(state.streetlights_installed, list)
                 else []
             )
+            raw_switches = (state.streetlight_switches
+                            if isinstance(state.streetlight_switches, list) else [])
             # Sites were deliberately relocated after the old layout was
             # removed. Never carry installed flags onto unrelated new places.
             if streetlight_layout_version != STREETLIGHT_LAYOUT_VERSION:
                 raw_streetlights = []
+                raw_switches = []
             state.streetlights_installed = [
                 bool(raw_streetlights[index])
                 if index < len(raw_streetlights)
                 else False
+                for index in range(STREETLIGHT_COUNT)
+            ]
+            state.streetlight_switches = [
+                raw_switches[index]
+                if (state.streetlights_installed[index] and index < len(raw_switches)
+                    and type(raw_switches[index]) is bool)
+                else None
                 for index in range(STREETLIGHT_COUNT)
             ]
             state.customers_waiting = max(

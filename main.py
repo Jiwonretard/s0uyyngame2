@@ -1421,7 +1421,7 @@ class GameApp(WardrobeUI, StorageUI, PurchaseUI):
                 installed = self.state.streetlights_installed[index]
                 site_name = STREETLIGHT_SITE_LABELS[index]
                 prompt = (
-                    "가로등 · 저녁부터 새벽까지 자동 점등"
+                    ("가로등 끄기 · E" if self.is_streetlight_lit(index) else "가로등 켜기 · E")
                     if installed
                     else f"가로등 설치 ({STREETLIGHT_COST:,}벨리)"
                 )
@@ -1582,8 +1582,14 @@ class GameApp(WardrobeUI, StorageUI, PurchaseUI):
             self.overlay = "facility"
             return
         elif kind == "streetlight":
-            ok, message = self.state.buy_streetlight(target["index"])
-            if ok:
+            index = target["index"]
+            installed = self.state.streetlights_installed[index]
+            if installed:
+                night = day_period_for_phase(self.game_clock()[3]) in ("저녁", "밤", "새벽")
+                ok, message = self.state.toggle_streetlight(index, night=night)
+            else:
+                ok, message = self.state.buy_streetlight(index)
+            if ok and not installed:
                 self.spawn_particles(
                     (target["point"][0], target["point"][1] - 82), GOLD, 24
                 )
@@ -2834,6 +2840,10 @@ class GameApp(WardrobeUI, StorageUI, PurchaseUI):
         )
         self.text(label, 15, INK, sign.centerx, sign.centery, center=True)
 
+    def is_streetlight_lit(self, index: int) -> bool:
+        night = day_period_for_phase(self.game_clock()[3]) in ("저녁", "밤", "새벽")
+        return self.state.streetlight_is_on(index, night=night)
+
     def draw_streetlight(self, index: int, point: tuple[int, int]) -> None:
         x, y = self.world_to_screen(point)
         if not (-100 < x < SCREEN_W + 100 and -150 < y < SCREEN_H + 80):
@@ -2853,8 +2863,7 @@ class GameApp(WardrobeUI, StorageUI, PurchaseUI):
                       sign.centerx, sign.y + 38, center=True)
             return
 
-        period = day_period_for_phase(self.game_clock()[3])
-        is_lit = period in ("저녁", "밤", "새벽")
+        is_lit = self.is_streetlight_lit(index)
         post_color = (69, 66, 75)
         pygame.draw.rect(self.screen, (39, 38, 45), (x - 8, y - 82, 16, 84))
         pygame.draw.rect(self.screen, post_color, (x - 4, y - 79, 8, 78))
@@ -3237,54 +3246,27 @@ class GameApp(WardrobeUI, StorageUI, PurchaseUI):
 
     def draw_lighting(self) -> None:
         _day, _hour, _minute, phase = self.game_clock()
-        period = day_period_for_phase(phase)
+        night = day_period_for_phase(phase) in ("저녁", "밤", "새벽")
         red, green, blue, alpha = lighting_color_for_phase(phase)
-        if alpha <= 0:
-            return
-        color_rgb = (red, green, blue)
-        overlay = self._lighting_overlay
-        overlay.fill((*color_rgb, alpha))
-
-        if period in ("저녁", "밤", "새벽"):
-            for installed, point in zip(
-                self.state.streetlights_installed,
-                STREETLIGHT_POSITIONS,
-            ):
-                if not installed:
-                    continue
+        lit_points = [
+            point for index, point in enumerate(STREETLIGHT_POSITIONS)
+            if self.state.streetlight_is_on(index, night=night)
+        ]
+        if alpha > 0:
+            color_rgb = (red, green, blue)
+            overlay = self._lighting_overlay
+            overlay.fill((*color_rgb, alpha))
+            for point in lit_points:
                 lamp_x, lamp_y = self.world_to_screen((point[0] + 25, point[1] - 82))
                 if not (-170 < lamp_x < SCREEN_W + 170 and -170 < lamp_y < SCREEN_H + 170):
                     continue
-                pygame.draw.circle(
-                    overlay,
-                    (*color_rgb, round(alpha * 0.80)),
-                    (lamp_x, lamp_y),
-                    155,
-                )
-                pygame.draw.circle(
-                    overlay,
-                    (*color_rgb, round(alpha * 0.45)),
-                    (lamp_x, lamp_y),
-                    112,
-                )
-                pygame.draw.circle(
-                    overlay,
-                    (*color_rgb, round(alpha * 0.10)),
-                    (lamp_x, lamp_y),
-                    67,
-                )
-        self.screen.blit(overlay, (0, 0))
-
-        if period in ("저녁", "밤", "새벽"):
-            for installed, point in zip(
-                self.state.streetlights_installed,
-                STREETLIGHT_POSITIONS,
-            ):
-                if not installed:
-                    continue
-                lamp_x, lamp_y = self.world_to_screen((point[0] + 25, point[1] - 82))
-                if not (-120 < lamp_x < SCREEN_W + 120 and -120 < lamp_y < SCREEN_H + 120):
-                    continue
+                for radius, strength in ((155, 0.80), (112, 0.45), (67, 0.10)):
+                    pygame.draw.circle(overlay, (*color_rgb, round(alpha * strength)),
+                                       (lamp_x, lamp_y), radius)
+            self.screen.blit(overlay, (0, 0))
+        for point in lit_points:
+            lamp_x, lamp_y = self.world_to_screen((point[0] + 25, point[1] - 82))
+            if -120 < lamp_x < SCREEN_W + 120 and -120 < lamp_y < SCREEN_H + 120:
                 self.screen.blit(self._lamp_glow, (lamp_x - 75, lamp_y - 75))
 
     def draw_celestial_cycle(self) -> None:
@@ -4326,7 +4308,7 @@ class GameApp(WardrobeUI, StorageUI, PurchaseUI):
             ("낚시", "상점 낚싯대 → 연못 E", "입질 뒤 초록 구간에서 E! 너무 빠르거나 늦으면 놓쳐요."),
             ("집·가구", "농장집 문 앞 E", "집에 들어가 침대·서랍·책상·랜턴·화분을 구입해 꾸며요."),
             ("제조·판매", "블렌더 E → +/- · 5/6", "주문 재료를 맞추면 3초 동안 소리와 함께 직접 갈아요."),
-            ("낮·밤·가로등", "하루 24분 · 부지 E", "지정된 7곳의 가로등은 저녁부터 새벽까지 자동으로 켜져요."),
+            ("낮·밤·가로등", "하루 24분 · 부지 E", "구매한 가로등은 가까이에서 E로 끄고 켤 수 있어요."),
         ]
         y = 176
         for title, control, body in rows:

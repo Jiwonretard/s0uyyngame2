@@ -443,6 +443,35 @@ class HarvestEventTests(unittest.TestCase):
             0,
         )
 
+    def test_e_purchases_then_switches_streetlight_and_saves_without_extra_cost(self):
+        self.app.state.money = main.STREETLIGHT_COST
+        self.app.player.update(*main.STREETLIGHT_POSITIONS[0])
+        self.app._snap_camera()
+        self.app.state.game_elapsed_seconds = main.DAY_SECONDS * 0.75
+        event = pygame.event.Event(pygame.KEYDOWN, key=pygame.K_e, mod=0)
+        self.app.handle_key(event)
+        self.assertEqual(self.app.state.money, 0)
+        self.assertTrue(self.app.is_streetlight_lit(0))
+        self.assertIn('끄기', self.app.nearest_interaction()['prompt'])
+        def light_pixel():
+            self.app.screen.fill((150, 150, 150))
+            self.app.draw_lighting()
+            return sum(self.app.screen.get_at(self.app.world_to_screen((1575, 548)))[:3])
+        on_pixel = light_pixel()
+        self.app.handle_key(event)
+        self.assertFalse(self.app.is_streetlight_lit(0))
+        self.assertIn('켜기', self.app.nearest_interaction()['prompt'])
+        self.assertLess(light_pixel(), on_pixel)
+        self.assertFalse(GameState.load(main.SAVE_PATH).streetlight_switches[0])
+        self.app.handle_key(event)
+        self.assertTrue(self.app.is_streetlight_lit(0))
+        self.assertEqual(self.app.state.money, 0)
+        self.assertTrue(GameState.load(main.SAVE_PATH).streetlight_switches[0])
+        self.app.state.game_elapsed_seconds = main.DAY_SECONDS * 0.25
+        self.assertTrue(self.app.is_streetlight_lit(0))
+        self.app.handle_key(event)
+        self.assertFalse(self.app.is_streetlight_lit(0))
+
     def test_photo_streetlight_sites_are_interactive_and_light_the_night(self):
         self.assertEqual(len(main.STREETLIGHT_POSITIONS), main.STREETLIGHT_COUNT)
         self.assertEqual(len(main.STREETLIGHT_SITE_LABELS), main.STREETLIGHT_COUNT)

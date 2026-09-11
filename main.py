@@ -46,6 +46,7 @@ from game_state import (
     MAX_PLOTS,
     ORGANIC_BLUEBERRY_PRICE,
     SPECIAL_SMOOTHIE_BONUS,
+    STORAGE_UPGRADE_COST,
     STREETLIGHT_COST,
     STREETLIGHT_COUNT,
     WEATHER_LABELS,
@@ -268,6 +269,8 @@ HOME_DRAWER_BUTTON = pygame.Rect(450, 109, 195, 29)
 HOME_ROTATE_BUTTON = pygame.Rect(845, 490, 110, 42)
 HOME_STORE_BUTTON = pygame.Rect(965, 490, 110, 42)
 HOME_DONE_BUTTON = pygame.Rect(1085, 490, 110, 42)
+BAG_UPGRADE_BUTTON = pygame.Rect(350, 618, 270, 48)
+BAG_CLOSE_BUTTON = pygame.Rect(660, 618, 270, 48)
 HOME_DOOR_RECT = pygame.Rect(HOME_BUILD_AREA.centerx - 42, HOME_BUILD_AREA.bottom - 18, 84, 22)
 HOME_PLAYER_START = (HOME_BUILD_AREA.centerx, HOME_BUILD_AREA.bottom - 30)
 HOME_PLAYER_SPEED = 205.0
@@ -1835,6 +1838,38 @@ class GameApp(WardrobeUI, StorageUI, PurchaseUI):
             self.home_rotation = 0
             self.save()
 
+    def request_bag_upgrade(self) -> None:
+        if self.state.bag_upgraded:
+            self.notify("가방은 이미 5×5로 확장했어요.")
+            return
+        self.request_purchase(
+            "가방 5×5 확장",
+            STORAGE_UPGRADE_COST,
+            self.complete_bag_upgrade,
+        )
+
+    def complete_bag_upgrade(self) -> None:
+        ok, message = self.state.upgrade_bag()
+        self.notify(message, not ok)
+        if ok:
+            self.save()
+
+    def request_drawer_upgrade(self) -> None:
+        if self.state.drawer_upgraded:
+            self.notify("서랍은 이미 6×6으로 확장했어요.")
+            return
+        self.request_purchase(
+            "모든 서랍 6×6 확장",
+            STORAGE_UPGRADE_COST,
+            self.complete_drawer_upgrade,
+        )
+
+    def complete_drawer_upgrade(self) -> None:
+        ok, message = self.state.upgrade_drawer()
+        self.notify(message, not ok)
+        if ok:
+            self.save()
+
     def select_furniture(self, key: str) -> bool:
         if key not in self.state.furniture_owned:
             self.notify("먼저 이 가구를 구입해 주세요.", True)
@@ -2209,7 +2244,12 @@ class GameApp(WardrobeUI, StorageUI, PurchaseUI):
             self.save(announce=True)
             return
         if self.overlay == "bag":
-            if self.is_interaction_key(event):
+            if (
+                event.key == pygame.K_u
+                or getattr(event, "scancode", None) == pygame.KSCAN_U
+            ):
+                self.request_bag_upgrade()
+            elif self.is_interaction_key(event):
                 self.overlay = None
             return
         if self.overlay == "daily_report":
@@ -2371,6 +2411,12 @@ class GameApp(WardrobeUI, StorageUI, PurchaseUI):
             return
         if self.overlay == "wardrobe":
             self.handle_wardrobe_click(position)
+            return
+        if self.overlay == "bag":
+            if BAG_UPGRADE_BUTTON.collidepoint(position) and not self.state.bag_upgraded:
+                self.request_bag_upgrade()
+            elif BAG_CLOSE_BUTTON.collidepoint(position):
+                self.overlay = None
             return
         if self.overlay == "help":
             if pygame.Rect(510, 616, 260, 55).collidepoint(position):
@@ -4430,8 +4476,11 @@ class GameApp(WardrobeUI, StorageUI, PurchaseUI):
         pygame.draw.rect(self.screen, WOOD, card)
         pygame.draw.rect(self.screen, CREAM, card.inflate(-18, -18))
         self.text("재료 가방", 32, BLUEBERRY_DARK, card.centerx, 70, center=True)
+        columns = self.state.bag_columns
+        rows = self.state.bag_rows
+        capacity = self.state.bag_slot_count
         self.text(
-            f"4×4 총 {BAG_SLOT_COUNT}칸 · 한 칸에 같은 재료 최대 {BAG_STACK_SIZE}개",
+            f"{columns}×{rows} 총 {capacity}칸 · 한 칸에 같은 재료 최대 {BAG_STACK_SIZE}개",
             16,
             MUTED,
             card.centerx,
@@ -4443,23 +4492,24 @@ class GameApp(WardrobeUI, StorageUI, PurchaseUI):
         used = len(stacks)
         meter = pygame.Rect(438, 129, 404, 18)
         rounded_rect(self.screen, meter, (215, 191, 146), 7, WOOD_DARK, 2)
-        fill_width = round((meter.width - 6) * min(used, BAG_SLOT_COUNT) / BAG_SLOT_COUNT)
+        fill_width = round((meter.width - 6) * min(used, capacity) / capacity)
         if fill_width:
             pygame.draw.rect(
                 self.screen,
-                (114, 137, 76) if used < BAG_SLOT_COUNT else RED,
+                (114, 137, 76) if used < capacity else RED,
                 (meter.x + 3, meter.y + 3, fill_width, meter.height - 6),
                 border_radius=5,
             )
-        self.text(f"{used}/{BAG_SLOT_COUNT}칸 사용", 13, INK,
+        self.text(f"{used}/{capacity}칸 사용", 13, INK,
                   meter.centerx, meter.centery, center=True)
 
-        slot_w, slot_h, gap = 126, 94, 12
-        start_x, start_y = 370, 165
-        visible_stacks = stacks[:BAG_SLOT_COUNT]
-        for index in range(BAG_SLOT_COUNT):
-            column = index % BAG_COLUMNS
-            row = index // BAG_COLUMNS
+        slot_w, slot_h, gap = 96, 70, 8
+        grid_width = columns * slot_w + (columns - 1) * gap
+        start_x, start_y = card.centerx - grid_width // 2, 165
+        visible_stacks = stacks[:capacity]
+        for index in range(capacity):
+            column = index % columns
+            row = index // columns
             rect = pygame.Rect(
                 start_x + column * (slot_w + gap),
                 start_y + row * (slot_h + gap),
@@ -4482,57 +4532,64 @@ class GameApp(WardrobeUI, StorageUI, PurchaseUI):
                 continue
 
             key, amount = visible_stacks[index]
-            icon_center = (rect.x + 38, rect.y + 50)
-            if self.draw_item_icon(key, icon_center):
+            icon_center = (rect.centerx, rect.y + 27)
+            if self.draw_item_icon(key, icon_center, small=True):
                 pass
             elif key == "seeds":
                 pygame.draw.ellipse(
                     self.screen, (97, 68, 34),
-                    (icon_center[0] - 12, icon_center[1] - 7, 16, 23),
+                    (icon_center[0] - 10, icon_center[1] - 6, 13, 19),
                 )
                 pygame.draw.ellipse(
                     self.screen, (222, 177, 62),
-                    (icon_center[0] - 9, icon_center[1] - 5, 10, 17),
+                    (icon_center[0] - 8, icon_center[1] - 4, 8, 14),
                 )
                 pygame.draw.line(
                     self.screen, GREEN_DARK,
-                    (icon_center[0] + 1, icon_center[1] - 5),
-                    (icon_center[0] + 10, icon_center[1] - 17), 4,
+                    (icon_center[0], icon_center[1] - 4),
+                    (icon_center[0] + 8, icon_center[1] - 14), 3,
                 )
                 pygame.draw.ellipse(
                     self.screen, LEAF,
-                    (icon_center[0] + 6, icon_center[1] - 20, 15, 10),
+                    (icon_center[0] + 5, icon_center[1] - 17, 13, 8),
                 )
-            label_size = 13 if key in (
-                "golden_blueberries", "premium_honey", "premium_ice", "low_fat_milk"
-            ) else 15
-            self.text(BAG_ITEM_LABELS[key], label_size, INK, rect.x + 65, rect.y + 24)
-            badge = pygame.Rect(rect.x + 68, rect.y + 49, 48, 29)
-            rounded_rect(self.screen, badge, BLUEBERRY_DARK, 8)
+            label = self.fitted_text(BAG_ITEM_LABELS[key], 13, rect.width - 10)
+            self.text(label, 13, INK, rect.centerx, rect.y + 51, center=True)
+            badge = pygame.Rect(rect.right - 45, rect.y + 5, 39, 20)
+            rounded_rect(self.screen, badge, BLUEBERRY_DARK, 6)
             badge_text = (
                 f"{self.state.fishing_rod_durability}/{FISHING_ROD_MAX_DURABILITY}"
                 if key == "fishing_rod"
                 else f"×{amount}"
             )
-            self.text(badge_text, 14 if key == "fishing_rod" else 16,
+            self.text(badge_text, 13,
                       WHITE, badge.centerx, badge.centery, center=True)
 
-        if used > BAG_SLOT_COUNT:
+        if used > capacity:
             self.text(
-                "이전 저장에 16칸을 넘는 재료가 있어요. 재료를 사용하면 정상 용량으로 돌아옵니다.",
+                f"이전 저장에 {capacity}칸을 넘는 재료가 있어요. 재료를 사용하면 정상 용량으로 돌아옵니다.",
                 13,
                 RED,
                 card.centerx,
-                594,
+                585,
                 center=True,
             )
         else:
             self.text("일반 재료와 나무에서 얻은 희귀 재료가 종류별로 자동 정리됩니다.",
-                      13, MUTED, card.centerx, 594, center=True)
+                      13, MUTED, card.centerx, 585, center=True)
 
-        close = pygame.Rect(510, 614, 260, 48)
-        rounded_rect(self.screen, close, BLUEBERRY, 10, WOOD_DARK, 4)
-        self.text("가방 닫기  B / E", 18, WHITE, close.centerx, close.centery, center=True)
+        upgrade_color = (151, 142, 139) if self.state.bag_upgraded else GOLD
+        rounded_rect(self.screen, BAG_UPGRADE_BUTTON, upgrade_color, 10, WOOD_DARK, 4)
+        rounded_rect(self.screen, BAG_CLOSE_BUTTON, BLUEBERRY, 10, WOOD_DARK, 4)
+        upgrade_text = (
+            "5×5 확장 완료"
+            if self.state.bag_upgraded
+            else f"5×5 확장 {STORAGE_UPGRADE_COST:,}벨리 · U"
+        )
+        self.text(upgrade_text, 16, INK, BAG_UPGRADE_BUTTON.centerx,
+                  BAG_UPGRADE_BUTTON.centery, center=True)
+        self.text("가방 닫기  B / E", 17, WHITE, BAG_CLOSE_BUTTON.centerx,
+                  BAG_CLOSE_BUTTON.centery, center=True)
 
     def draw_help_overlay(self) -> None:
         self.draw_screen_shade((31, 26, 39, 175))

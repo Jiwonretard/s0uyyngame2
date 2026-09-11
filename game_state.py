@@ -43,9 +43,16 @@ BAG_STACK_SIZE = 16
 BAG_COLUMNS = 4
 BAG_ROWS = 4
 BAG_SLOT_COUNT = BAG_COLUMNS * BAG_ROWS
+BAG_UPGRADED_COLUMNS = 5
+BAG_UPGRADED_ROWS = 5
+BAG_UPGRADED_SLOT_COUNT = BAG_UPGRADED_COLUMNS * BAG_UPGRADED_ROWS
 DRAWER_COLUMNS = 5
 DRAWER_ROWS = 5
 DRAWER_SLOT_COUNT = DRAWER_COLUMNS * DRAWER_ROWS
+DRAWER_UPGRADED_COLUMNS = 6
+DRAWER_UPGRADED_ROWS = 6
+DRAWER_UPGRADED_SLOT_COUNT = DRAWER_UPGRADED_COLUMNS * DRAWER_UPGRADED_ROWS
+STORAGE_UPGRADE_COST = 5_000
 BAG_ITEM_KEYS = (
     "blueberries",
     "organic_blueberries",
@@ -483,6 +490,8 @@ class GameState:
     golden_blueberries_sold: int = 0
     trees_shaken: int = 0
     fish_caught: int = 0
+    bag_upgraded: bool = False
+    drawer_upgraded: bool = False
     furniture_owned: list[str] = field(default_factory=list)
     furniture_layout: dict[str, list[int]] = field(default_factory=dict)
     lantern_switches: dict[str, bool] = field(default_factory=dict)
@@ -781,13 +790,57 @@ class GameState:
     def bag_slots_used(self) -> int:
         return len(self.bag_stacks())
 
+    @property
+    def bag_columns(self) -> int:
+        return BAG_UPGRADED_COLUMNS if self.bag_upgraded else BAG_COLUMNS
+
+    @property
+    def bag_rows(self) -> int:
+        return BAG_UPGRADED_ROWS if self.bag_upgraded else BAG_ROWS
+
+    @property
+    def bag_slot_count(self) -> int:
+        return BAG_UPGRADED_SLOT_COUNT if self.bag_upgraded else BAG_SLOT_COUNT
+
+    @property
+    def drawer_columns(self) -> int:
+        return DRAWER_UPGRADED_COLUMNS if self.drawer_upgraded else DRAWER_COLUMNS
+
+    @property
+    def drawer_rows(self) -> int:
+        return DRAWER_UPGRADED_ROWS if self.drawer_upgraded else DRAWER_ROWS
+
+    @property
+    def drawer_slot_count(self) -> int:
+        return DRAWER_UPGRADED_SLOT_COUNT if self.drawer_upgraded else DRAWER_SLOT_COUNT
+
+    def upgrade_bag(self) -> tuple[bool, str]:
+        if self.bag_upgraded:
+            return False, "가방은 이미 5×5로 확장했어요."
+        if self.money < STORAGE_UPGRADE_COST:
+            return False, f"가방 확장에는 {STORAGE_UPGRADE_COST:,}벨리가 필요해요."
+        self.money -= STORAGE_UPGRADE_COST
+        self.daily_money_spent += STORAGE_UPGRADE_COST
+        self.bag_upgraded = True
+        return True, "가방을 5×5, 총 25칸으로 확장했어요!"
+
+    def upgrade_drawer(self) -> tuple[bool, str]:
+        if self.drawer_upgraded:
+            return False, "서랍은 이미 6×6으로 확장했어요."
+        if self.money < STORAGE_UPGRADE_COST:
+            return False, f"서랍 확장에는 {STORAGE_UPGRADE_COST:,}벨리가 필요해요."
+        self.money -= STORAGE_UPGRADE_COST
+        self.daily_money_spent += STORAGE_UPGRADE_COST
+        self.drawer_upgraded = True
+        return True, "모든 서랍을 6×6, 각각 36칸으로 확장했어요!"
+
     def can_add_to_bag(self, key: str, amount: int = 1) -> bool:
         if key not in BAG_ITEM_KEYS or amount <= 0:
             return True
         current = max(0, self.inventory(key))
         current_stacks = (current + BAG_STACK_SIZE - 1) // BAG_STACK_SIZE
         future_stacks = (current + amount + BAG_STACK_SIZE - 1) // BAG_STACK_SIZE
-        return self.bag_slots_used + future_stacks - current_stacks <= BAG_SLOT_COUNT
+        return self.bag_slots_used + future_stacks - current_stacks <= self.bag_slot_count
 
     def drawer_available(self, drawer: str) -> bool:
         return (drawer in FURNITURE_CATEGORIES["drawer"]
@@ -821,8 +874,8 @@ class GameState:
         if deposit:
             before = (stored + BAG_STACK_SIZE - 1) // BAG_STACK_SIZE
             after = (stored + amount + BAG_STACK_SIZE - 1) // BAG_STACK_SIZE
-            if len(self.drawer_stacks(drawer)) + after - before > DRAWER_SLOT_COUNT:
-                return False, "서랍 25칸이 가득 찼어요."
+            if len(self.drawer_stacks(drawer)) + after - before > self.drawer_slot_count:
+                return False, f"서랍 {self.drawer_slot_count}칸이 가득 찼어요."
         elif not self.can_add_to_bag(key, amount):
             return False, "가방에 공간이 부족해요."
         contents = self.drawer_contents.setdefault(drawer, {})
@@ -854,7 +907,10 @@ class GameState:
             for key in BAG_ITEM_KEYS:
                 value = contents.get(key)
                 if isinstance(value, int) and not isinstance(value, bool) and value > 0:
-                    clean[drawer][key] = min(value, 1 if key == "fishing_rod" else DRAWER_SLOT_COUNT * BAG_STACK_SIZE)
+                    clean[drawer][key] = min(
+                        value,
+                        1 if key == "fishing_rod" else self.drawer_slot_count * BAG_STACK_SIZE,
+                    )
             if clean[drawer].get("fishing_rod"):
                 durability = rods.get(drawer, FISHING_ROD_MAX_DURABILITY)
                 clean_rods[drawer] = max(1, min(FISHING_ROD_MAX_DURABILITY,
@@ -1600,6 +1656,10 @@ class GameState:
             for fish_key in FISH_PRICES:
                 setattr(state, fish_key, max(0, int(getattr(state, fish_key))))
             state.fish_caught = max(0, int(state.fish_caught))
+            state.bag_upgraded = type(state.bag_upgraded) is bool and state.bag_upgraded
+            state.drawer_upgraded = (
+                type(state.drawer_upgraded) is bool and state.drawer_upgraded
+            )
             state.normalize_drawers()
             state.appearance = normalized_appearance(state.appearance)
             state.owned_cosmetics = normalized_owned_cosmetics(

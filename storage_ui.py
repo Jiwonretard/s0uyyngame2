@@ -1,17 +1,32 @@
-"""House drawers: a 4x4 bag alongside a separate 5x5 storage grid."""
+"""Upgradeable house storage: the bag and each placed drawer side by side."""
 import pygame
 from furniture_catalog import FURNITURE_CATEGORIES, FURNITURE_LABELS
-from game_state import BAG_ITEM_LABELS, BAG_SLOT_COUNT, DRAWER_SLOT_COUNT
+from game_state import BAG_ITEM_LABELS, STORAGE_UPGRADE_COST
 
 INK = (55, 39, 69)
 CREAM = (255, 242, 210)
 PURPLE = (94, 70, 153)
 RETURN_RECT = pygame.Rect(995, 625, 200, 40)
+BAG_UPGRADE_RECT = pygame.Rect(85, 625, 225, 40)
+DRAWER_UPGRADE_RECT = pygame.Rect(650, 625, 225, 40)
 
 
-def slot_rect(index, deposit):
-    columns, left = (4, 85) if deposit else (5, 650)
-    return pygame.Rect(left + (index % columns) * 104, 175 + (index // columns) * 84, 96, 76)
+def slot_rect(index, deposit, columns=None):
+    columns = columns or (4 if deposit else 5)
+    if deposit or columns == 5:
+        left = 85 if columns == 4 else (65 if deposit else 650)
+        return pygame.Rect(
+            left + (index % columns) * 104,
+            175 + (index // columns) * 84,
+            96,
+            76,
+        )
+    return pygame.Rect(
+        650 + (index % columns) * 90,
+        175 + (index // columns) * 70,
+        82,
+        64,
+    )
 
 
 class StorageUI:
@@ -27,12 +42,20 @@ class StorageUI:
         self.overlay = "storage"
 
     def handle_storage_key(self, event):
-        if event.key in (pygame.K_ESCAPE, pygame.K_RETURN) or self.is_interaction_key(event):
+        if event.key == pygame.K_u or getattr(event, "scancode", None) == pygame.KSCAN_U:
+            self.request_drawer_upgrade()
+        elif event.key in (pygame.K_ESCAPE, pygame.K_RETURN) or self.is_interaction_key(event):
             self.overlay = "home"
 
     def handle_storage_click(self, position):
         if RETURN_RECT.collidepoint(position):
             self.overlay = "home"
+            return
+        if BAG_UPGRADE_RECT.collidepoint(position) and not self.state.bag_upgraded:
+            self.request_bag_upgrade()
+            return
+        if DRAWER_UPGRADE_RECT.collidepoint(position) and not self.state.drawer_upgraded:
+            self.request_drawer_upgrade()
             return
         for i, key in enumerate(FURNITURE_CATEGORIES["drawer"]):
             if pygame.Rect(85 + i * 224, 95, 210, 38).collidepoint(position):
@@ -43,8 +66,10 @@ class StorageUI:
                 return
         for deposit, stacks in ((True, self.state.bag_stacks()),
                                 (False, self.state.drawer_stacks(self.active_drawer))):
-            for index, (key, amount) in enumerate(stacks[:BAG_SLOT_COUNT if deposit else DRAWER_SLOT_COUNT]):
-                if slot_rect(index, deposit).collidepoint(position):
+            capacity = self.state.bag_slot_count if deposit else self.state.drawer_slot_count
+            columns = self.state.bag_columns if deposit else self.state.drawer_columns
+            for index, (key, amount) in enumerate(stacks[:capacity]):
+                if slot_rect(index, deposit, columns).collidepoint(position):
                     quantity = 1 if pygame.key.get_mods() & pygame.KMOD_SHIFT else amount
                     ok, self.storage_message = self.state.transfer_drawer(
                         self.active_drawer, key, quantity, deposit=deposit)
@@ -67,23 +92,38 @@ class StorageUI:
                       CREAM if active else INK, rect.centerx, rect.centery, center=True)
         for deposit, stacks in ((True, self.state.bag_stacks()),
                                 (False, self.state.drawer_stacks(self.active_drawer))):
-            capacity = BAG_SLOT_COUNT if deposit else DRAWER_SLOT_COUNT
+            capacity = self.state.bag_slot_count if deposit else self.state.drawer_slot_count
+            columns = self.state.bag_columns if deposit else self.state.drawer_columns
             self.text(f"{'가방' if deposit else '서랍'}  {len(stacks)}/{capacity}칸", 18, INK,
                       85 if deposit else 650, 145)
             for index in range(capacity):
-                rect = slot_rect(index, deposit)
+                rect = slot_rect(index, deposit, columns)
                 pygame.draw.rect(self.screen, (238, 215, 177), rect, border_radius=6)
                 pygame.draw.rect(self.screen, (176, 137, 94), rect, 2, border_radius=6)
                 if index >= len(stacks):
                     continue
                 key, amount = stacks[index]
-                self.draw_item_icon(key, (rect.centerx, rect.y + 24), small=True)
-                self.text(BAG_ITEM_LABELS[key], 13, INK, rect.centerx, rect.y + 49, center=True)
+                compact = rect.height < 70
+                icon_y = rect.y + (18 if compact else 24)
+                label_y = rect.y + (37 if compact else 49)
+                suffix_y = rect.y + (53 if compact else 64)
+                self.draw_item_icon(key, (rect.centerx, icon_y), small=True)
+                label = self.fitted_text(BAG_ITEM_LABELS[key], 13, rect.width - 6)
+                self.text(label, 13, INK, rect.centerx, label_y, center=True)
                 suffix = str(amount)
                 if key == "fishing_rod":
                     durability = self.state.fishing_rod_durability if deposit else self.state.drawer_rod_durability.get(self.active_drawer, 40)
                     suffix = f"내구도 {durability}/40"
-                self.text(suffix, 13, PURPLE, rect.centerx, rect.y + 64, center=True)
-        self.text(self.storage_message, 15, INK, 85, 633)
+                self.text(self.fitted_text(suffix, 13, rect.width - 6), 13,
+                          PURPLE, rect.centerx, suffix_y, center=True)
+        for rect, upgraded, label in (
+            (BAG_UPGRADE_RECT, self.state.bag_upgraded, "가방 5×5"),
+            (DRAWER_UPGRADE_RECT, self.state.drawer_upgraded, "서랍 6×6"),
+        ):
+            color = (172, 165, 155) if upgraded else (221, 162, 68)
+            pygame.draw.rect(self.screen, color, rect, border_radius=8)
+            text = f"{label} 완료" if upgraded else f"{label} 확장 {STORAGE_UPGRADE_COST:,}벨리"
+            self.text(text, 14, INK, rect.centerx, rect.centery, center=True)
+        self.text(self.fitted_text(self.storage_message, 13, 1100), 13, INK, 85, 675)
         pygame.draw.rect(self.screen, PURPLE, RETURN_RECT, border_radius=8)
         self.text("집으로 E / Esc", 16, CREAM, RETURN_RECT.centerx, RETURN_RECT.centery, center=True)

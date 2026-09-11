@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from game_state import (  # noqa: E402
     BAG_SLOT_COUNT,
     BAG_STACK_SIZE,
+    BAG_UPGRADED_SLOT_COUNT,
     CUSTOMER_NAMES,
     CUSTOMER_NAME_DATA_PATH,
     CUSTOMER_QUEUE_SIZE,
@@ -38,6 +39,7 @@ from game_state import (  # noqa: E402
     SPECIAL_SMOOTHIE_BONUS,
     STREETLIGHT_COST,
     STREETLIGHT_COUNT,
+    STORAGE_UPGRADE_COST,
     TREE_DROP_TABLE,
     VIP_TITLES,
     GameState,
@@ -711,6 +713,60 @@ class GameStateTests(unittest.TestCase):
         state.blueberries -= 1
         self.assertTrue(state.can_add_to_bag("blueberries", 1))
         self.assertFalse(state.can_add_to_bag("blueberries", 2))
+
+    def test_bag_and_drawer_upgrades_cost_five_thousand_and_persist(self):
+        state = GameState.new(now=100.0)
+        state.money = STORAGE_UPGRADE_COST * 2
+        state.blueberries = BAG_SLOT_COUNT * BAG_STACK_SIZE
+        state.seeds = state.honey = state.milk = state.ice = 0
+
+        self.assertEqual(state.bag_slot_count, 16)
+        self.assertEqual(state.drawer_slot_count, 25)
+        self.assertFalse(state.can_add_to_bag("blueberries", 1))
+
+        ok, message = state.upgrade_bag()
+        self.assertTrue(ok)
+        self.assertIn("25칸", message)
+        self.assertEqual(state.money, STORAGE_UPGRADE_COST)
+        self.assertEqual(state.bag_slot_count, BAG_UPGRADED_SLOT_COUNT)
+        self.assertTrue(state.can_add_to_bag("blueberries", 1))
+
+        ok, message = state.upgrade_drawer()
+        self.assertTrue(ok)
+        self.assertIn("36칸", message)
+        self.assertEqual(state.money, 0)
+        self.assertEqual(state.drawer_slot_count, 36)
+        self.assertEqual(state.daily_money_spent, STORAGE_UPGRADE_COST * 2)
+
+        self.assertFalse(state.upgrade_bag()[0])
+        self.assertFalse(state.upgrade_drawer()[0])
+        self.assertEqual(state.money, 0)
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "expanded-storage.json"
+            state.save(path)
+            loaded = GameState.load(path, now=100.0)
+
+        self.assertTrue(loaded.bag_upgraded)
+        self.assertTrue(loaded.drawer_upgraded)
+        self.assertEqual(loaded.bag_slot_count, 25)
+        self.assertEqual(loaded.drawer_slot_count, 36)
+
+    def test_old_save_defaults_to_base_storage_sizes(self):
+        state = GameState.new(now=100.0)
+        data = state.to_dict()
+        data.pop("bag_upgraded")
+        data.pop("drawer_upgraded")
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "old-storage.json"
+            path.write_text(json.dumps(data), encoding="utf-8")
+            loaded = GameState.load(path, now=100.0)
+
+        self.assertFalse(loaded.bag_upgraded)
+        self.assertFalse(loaded.drawer_upgraded)
+        self.assertEqual(loaded.bag_slot_count, 16)
+        self.assertEqual(loaded.drawer_slot_count, 25)
 
     def test_full_bag_blocks_harvest_and_purchase_without_losing_money(self):
         state = GameState.new(now=100.0)

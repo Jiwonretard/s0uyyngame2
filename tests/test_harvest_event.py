@@ -1073,6 +1073,35 @@ class HarvestEventTests(unittest.TestCase):
         self.app.handle_click(RETURN_RECT.center)
         self.assertEqual(self.app.overlay, "home")
 
+    def test_bag_and_drawer_upgrade_buttons_confirm_expand_and_save(self):
+        from storage_ui import DRAWER_UPGRADE_RECT
+
+        self.app.state.money = 10_000
+        self.app.state.furniture_owned = ["drawer"]
+        self.app.state.furniture_layout = {"drawer": [0, 0, 0]}
+        self.app.overlay = "bag"
+
+        self.app.handle_click(main.BAG_UPGRADE_BUTTON.center)
+        self.assertEqual(self.app.pending_purchase.label, "가방 5×5 확장")
+        self.app.handle_key(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_y, mod=0))
+        self.assertTrue(self.app.state.bag_upgraded)
+        self.assertEqual(self.app.state.bag_slot_count, 25)
+        self.assertEqual(self.app.state.money, 5_000)
+        self.app.draw()
+
+        self.app.open_drawer("drawer")
+        self.app.handle_click(DRAWER_UPGRADE_RECT.center)
+        self.assertEqual(self.app.pending_purchase.label, "모든 서랍 6×6 확장")
+        self.app.handle_key(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_y, mod=0))
+        self.assertTrue(self.app.state.drawer_upgraded)
+        self.assertEqual(self.app.state.drawer_slot_count, 36)
+        self.assertEqual(self.app.state.money, 0)
+        self.app.draw()
+
+        loaded = GameState.load(main.SAVE_PATH)
+        self.assertTrue(loaded.bag_upgraded)
+        self.assertTrue(loaded.drawer_upgraded)
+
     def test_facility_can_be_built_and_collected_from_world_interaction(self):
         self.app.state.money = 10_000
         self.app.state.reputation = 0
